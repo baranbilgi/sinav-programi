@@ -21,18 +21,26 @@ def parse_xml(xml_content):
         for sinav in sinavlar:
             siniflar_text = sinav.find('siniflar').text
             sinif_listesi = [s.strip() for s in siniflar_text.split(',') if s.strip()]
+            
+            # Otomatik Etiketleme Mantığı (XML'de yoksa saate göre ata)
+            etiket = sinav.get('etiket', 'normal')
+            bas_saat = int(sinav.get('baslangic').split(':')[0])
+            if etiket == 'normal':
+                if bas_saat <= 10: etiket = 'sabah'
+                elif bas_saat >= 17: etiket = 'aksam'
+
             for s in sinif_listesi:
                 all_rooms.add(s)
                 tasks.append({
                     'gun': gun_adi, 'sinav': sinav.get('ad'), 
                     'saat': f"{sinav.get('baslangic')}-{sinav.get('bitis')}",
                     'baslangic': sinav.get('baslangic'), 'sinif': s,
-                    'sure': int(sinav.get('sure')), 'etiket': sinav.get('etiket', 'normal'),
+                    'sure': int(sinav.get('sure')), 'etiket': etiket,
                     'slot_id': f"{gun_adi}_{sinav.get('baslangic')}"
                 })
     return tasks, sorted(list(all_rooms)), days_order
 
-# --- YAN MENÜ (AYARLAR VE ÖNCELİKLER) ---
+# --- YAN MENÜ ---
 st.sidebar.header("⚙️ Operasyonel Ayarlar")
 uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (XML)", type=["xml"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
@@ -71,9 +79,7 @@ if uploaded_file:
                 
                 for d_idx, d in enumerate(days_list):
                     day_tasks = [idx for idx, t in enumerate(tasks) if t['gun'] == d]
-                    # Günlük limit 3'ten 4'e yükseltildi
                     model.Add(sum(x[i, idx] for idx in day_tasks) <= 4)
-                    
                     if d_idx < len(days_list) - 1:
                         today_last = [idx for idx, t in enumerate(tasks) if t['gun'] == d and t['etiket'] == 'aksam']
                         tomorrow_first = [idx for idx, t in enumerate(tasks) if t['gun'] == days_list[d_idx+1] and t['etiket'] == 'sabah']
@@ -116,7 +122,7 @@ if uploaded_file:
             solver = cp_model.CpSolver()
             solver.parameters.max_time_in_seconds = 30.0
             if solver.Solve(model) in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
-                st.success("✅ Planlama başarıyla optimize edildi.")
+                st.success("✅ Dağıtım Planı başarıyla hazırlandı.")
                 
                 final_res = []
                 for t_idx, t in enumerate(tasks):
@@ -127,7 +133,6 @@ if uploaded_file:
                             final_res.append(row)
                 
                 df = pd.DataFrame(final_res)
-                
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']].to_excel(writer, index=False)
@@ -136,7 +141,7 @@ if uploaded_file:
                 t1, t2, t3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Analizi", "📖 Metodoloji"])
                 
                 with t1:
-                    st.download_button("📥 Excel İndir", excel_data, "gorev_plani.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    st.download_button("📥 Çizelgeyi Excel Olarak İndir", excel_data, "gorev_plani.xlsx")
                     st.dataframe(df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']], use_container_width=True)
                 
                 with t2:
@@ -145,22 +150,4 @@ if uploaded_file:
                         report.append({
                             "Gözetmen": f"Gözetmen {i}",
                             "Toplam Mesai (dk)": solver.Value(total_mins[i]),
-                            "Büyük Sınıf Mesaisi (dk)": solver.Value(big_mins[i]),
-                            "Sabah Görevi": solver.Value(morn_cnt[i]),
-                            "Akşam Görevi": solver.Value(eve_cnt[i]),
-                            "Kritik Toplam (S+A)": solver.Value(critical_sum[i])
-                        })
-                    st.table(pd.DataFrame(report))
-
-                with t3:
-                    st.info("### 🧠 Sistem Çalışma Metodolojisi")
-                    st.markdown(f"""
-                    **Sert Kısıtlar:**
-                    1. **Çakışma Kontrolü:** Bir personel aynı anda birden fazla yerde görev alamaz.
-                    2. **Dinlenme Kuralı:** Akşam sınavı sonrası ertesi sabah görevi matematiksel olarak yasaklanmıştır.
-                    3. **Yorgunluk Yönetimi:** Günlük maksimum sınav sayısı **4** ile sınırlandırılmıştır.
-                    """)
-            else:
-                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı deneyin.")
-else:
-    st.info("Lütfen sol taraftaki menüyü kullanarak sınav takviminizi (XML) yükleyin.")
+                            "Büyük Sınıf Mesaisi (dk
