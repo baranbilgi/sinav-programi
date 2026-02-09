@@ -3,6 +3,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from ortools.sat.python import cp_model
 import io
+import re
 
 # Sayfa Yapılandırması
 st.set_page_config(page_title="Gözetmen Planlama Sistemi", layout="wide")
@@ -10,12 +11,15 @@ st.title("🏛️ Gözetmen Optimizasyon ve Görev Planlama Sistemi")
 
 # --- YARDIMCI FONKSİYONLAR ---
 def to_min(time_str):
-    """'HH:MM' veya 'HH.MM' formatındaki saati gün başlangıcından itibaren dakikaya çevirir."""
+    """'08:00' veya '08.00' formatını gün başlangıcından itibaren dakikaya çevirir."""
+    if not time_str: return None
     try:
-        h, m = map(int, time_str.replace('.', ':').split(':'))
+        # Nokta veya iki nokta ayrımını temizle
+        clean_time = re.sub(r'[^0-9:]', ':', time_str.replace('.', ':')).strip()
+        h, m = map(int, clean_time.split(':'))
         return h * 60 + m
     except:
-        return 0
+        return None
 
 def parse_xml(xml_content):
     tree = ET.ElementTree(ET.fromstring(xml_content))
@@ -35,32 +39,23 @@ def parse_xml(xml_content):
                 tasks.append({
                     'gun': gun_adi, 'sinav': sinav.get('ad'), 
                     'saat': f"{sinav.get('baslangic')}-{sinav.get('bitis')}",
-                    'baslangic': sinav.get('baslangic'), 'sinif': s,
-                    'sure': int(sinav.get('sure')), 'etiket': sinav.get('etiket', 'normal'),
+                    'baslangic': sinav.get('baslangic').strip(), 
+                    'sinif': s,
+                    'sure': int(sinav.get('sure')), 
+                    'etiket': sinav.get('etiket', 'normal'),
                     'slot_id': f"{gun_adi}_{sinav.get('baslangic')}"
                 })
     return tasks, sorted(list(all_rooms)), days_order
 
-# --- YAN MENÜ (AYARLAR VE ÖNCELİKLER) ---
+# --- YAN MENÜ ---
 st.sidebar.header("⚙️ Operasyonel Ayarlar")
 uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (XML)", type=["xml"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
 
-# --- MUAFİYET PANELİ ---
 st.sidebar.divider()
 st.sidebar.subheader("🚫 Görev Muafiyetleri")
-
-unavailable_days_input = st.sidebar.text_area(
-    "1. Gün Bazlı Muafiyet", 
-    placeholder="Örn: 1:Pazartesi, 2:Sali",
-    help="Belirtilen gözetmeni o günün tamamından muaf tutar."
-)
-
-unavailable_times_input = st.sidebar.text_area(
-    "2. Saat Aralığı Muafiyeti (Tüm Hafta)", 
-    placeholder="Örn: 1:16:00-20:00",
-    help="Format: GözetmenNo:Başlangıç-Bitiş. Belirtilen saat aralığına denk gelen sınavlara atama yapılmaz."
-)
+unavailable_days_input = st.sidebar.text_area("1. Gün Bazlı Muafiyet", placeholder="Örn: 1:Pazartesi")
+unavailable_times_input = st.sidebar.text_area("2. Saat Aralığı Muafiyeti (Tüm Hafta)", placeholder="Örn: 1:08:00-12:00")
 
 st.sidebar.divider()
 st.sidebar.header("🎯 Strateji Ağırlıkları (Toplam: 100)")
@@ -79,7 +74,7 @@ if uploaded_file:
     
     if st.sidebar.button("Planlamayı Optimize Et"):
         if total_weight != 100:
-            st.sidebar.error(f"⚠️ Hata: Ağırlıkların toplamı 100 olmalıdır! (Şu an: {total_weight}).")
+            st.sidebar.error("⚠️ Hata: Ağırlık toplamı 100 olmalıdır!")
         else:
             model = cp_model.CpModel()
             invs = list(range(1, staff_count + 1))
@@ -91,10 +86,12 @@ if uploaded_file:
                 model.Add(sum(x[i, t] for i in invs) == 1)
             
             for i in invs:
+                # Çakışma Kontrolü (Aynı saatte iki sınav olamaz)
                 for slot in set(t['slot_id'] for t in tasks):
                     overlap = [idx for idx, t in enumerate(tasks) if t['slot_id'] == slot]
                     model.Add(sum(x[i, idx] for idx in overlap) <= 1)
                 
+                # Günlük Limit ve Gece-Sabah Yasağı
                 for d_idx, d in enumerate(days_list):
                     day_tasks = [idx for idx, t in enumerate(tasks) if t['gun'] == d]
                     model.Add(sum(x[i, idx] for idx in day_tasks) <= 4)
@@ -106,7 +103,8 @@ if uploaded_file:
                             for tf in tomorrow_first:
                                 model.Add(x[i, tl] + x[i, tf] <= 1)
 
-            # --- GÜN BAZLI MUAFİYET ---
+            # --- MUAFİYET İŞLEME (Geliştirilmiş Matematiksel Mantık) ---
+            # Gün Bazlı
             if unavailable_days_input:
                 for entry in unavailable_days_input.split(','):
                     if ':' in entry:
@@ -115,121 +113,94 @@ if uploaded_file:
                             s_no = int(s_no_str.strip())
                             if s_no in invs:
                                 for idx, t in enumerate(tasks):
-                                    if t['gun'] == d_name.strip():
+                                    if t['gun'].strip().lower() == d_name.strip().lower():
                                         model.Add(x[s_no, idx] == 0)
                         except: continue
 
-            # --- SAAT ARALIĞI MUAFİYETİ ---
+            # Saat Aralığı Bazlı (Haftalık)
             if unavailable_times_input:
                 for entry in unavailable_times_input.split(','):
                     if ':' in entry:
                         try:
-                            s_no_str, time_range_str = entry.split(':')
-                            s_no = int(s_no_str.strip())
-                            if '-' in time_range_str and s_no in invs:
-                                t_start_str, t_end_str = time_range_str.split('-')
-                                exempt_start = to_min(t_start_str.strip())
-                                exempt_end = to_min(t_end_str.strip())
+                            # Giriş Örn: "1:08:00-12:00" -> s_no=1, range="08:00-12:00"
+                            parts = entry.split(':', 1)
+                            s_no = int(parts[0].strip())
+                            time_range = parts[1].strip()
+                            
+                            if '-' in time_range and s_no in invs:
+                                start_str, end_str = time_range.split('-')
+                                ex_start = to_min(start_str)
+                                ex_end = to_min(end_str)
                                 
-                                for idx, t in enumerate(tasks):
-                                    task_start = to_min(t['baslangic'])
-                                    task_end = task_start + t['sure']
-                                    
-                                    # Kesişim kontrolü: max(baslangiclar) < min(bitisler)
-                                    if max(task_start, exempt_start) < min(task_end, exempt_end):
-                                        model.Add(x[s_no, idx] == 0)
+                                if ex_start is not None and ex_end is not None:
+                                    for idx, t in enumerate(tasks):
+                                        task_start = to_min(t['baslangic'])
+                                        task_end = task_start + t['sure']
+                                        # Matematiksel Kesişim: max(start) < min(end)
+                                        if max(task_start, ex_start) < min(task_end, ex_end):
+                                            model.Add(x[s_no, idx] == 0)
                         except: continue
 
-            # --- ADALET DEĞİŞKENLERİ ---
-            total_mins, big_mins, morn_cnt, eve_cnt, critical_sum = {}, {}, {}, {}, {}
+            # --- ADALET DEĞİŞKENLERİ VE AMAÇ FONKSİYONU ---
+            total_mins = {i: model.NewIntVar(0, 10000, f'tm_{i}') for i in invs}
             for i in invs:
-                total_mins[i] = model.NewIntVar(0, 10000, f'tm_{i}')
-                big_mins[i] = model.NewIntVar(0, 10000, f'bm_{i}')
-                morn_cnt[i] = model.NewIntVar(0, 100, f'mc_{i}')
-                eve_cnt[i] = model.NewIntVar(0, 100, f'ec_{i}')
-                critical_sum[i] = model.NewIntVar(0, 200, f'cs_{i}')
-
                 model.Add(total_mins[i] == sum(x[i, t] * tasks[t]['sure'] for t in range(num_t)))
-                model.Add(big_mins[i] == sum(x[i, t] * tasks[t]['sure'] for t in range(num_t) if tasks[t]['sinif'] in big_rooms))
-                model.Add(morn_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['etiket'] == 'sabah'))
-                model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['etiket'] == 'aksam'))
-                model.Add(critical_sum[i] == morn_cnt[i] + eve_cnt[i])
-
-            def get_diff_var(v_dict, name):
-                ma, mi = model.NewIntVar(0, 10000, f'ma_{name}'), model.NewIntVar(0, 10000, f'mi_{name}')
-                model.AddMaxEquality(ma, list(v_dict.values()))
-                model.AddMinEquality(mi, list(v_dict.values()))
-                diff = model.NewIntVar(0, 10000, f'd_{name}')
-                model.Add(diff == ma - mi)
-                return diff
-
-            # --- AMAÇ FONKSİYONU ---
-            model.Minimize(
-                get_diff_var(total_mins, "t") * w_total * 100 +
-                get_diff_var(big_mins, "b") * w_big * 100 +
-                get_diff_var(morn_cnt, "m") * w_morn * 1000 + 
-                get_diff_var(eve_cnt, "e") * w_eve * 1000 +
-                get_diff_var(critical_sum, "c") * w_sa_total * 1000
-            )
+            
+            ma_t, mi_t = model.NewIntVar(0, 10000, 'ma'), model.NewIntVar(0, 10000, 'mi')
+            model.AddMaxEquality(ma_t, total_mins.values())
+            model.AddMinEquality(mi_t, total_mins.values())
+            
+            # Ana hedef: Süre farkını minimize et
+            model.Minimize(ma_t - mi_t)
 
             solver = cp_model.CpSolver()
             solver.parameters.max_time_in_seconds = 30.0
+            
             if solver.Solve(model) in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
                 st.success("✅ Planlama başarıyla optimize edildi.")
-                
-                final_res = []
+                res = []
                 for t_idx, t in enumerate(tasks):
                     for i in invs:
                         if solver.Value(x[i, t_idx]):
                             row = t.copy()
                             row['Gözetmen'] = i
-                            final_res.append(row)
+                            res.append(row)
                 
-                df = pd.DataFrame(final_res)
+                df_res = pd.DataFrame(res)
+                
+                # Excel İndirme
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']].to_excel(writer, index=False)
-                excel_data = output.getvalue()
-
-                t1, t2, t3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Analizi", "📖 Metodoloji"])
+                    df_res[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']].to_excel(writer, index=False)
                 
-                with t1:
-                    st.download_button("📥 Excel İndir", excel_data, "gorev_plani.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                    st.dataframe(df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']], use_container_width=True)
+                tab1, tab2, tab3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Analizi", "📖 Metodoloji"])
                 
-                with t2:
+                with tab1:
+                    st.download_button("📥 Excel İndir", output.getvalue(), "gorev_plani.xlsx")
+                    st.dataframe(df_res[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']], use_container_width=True)
+                
+                with tab2:
                     report = []
                     for i in invs:
                         report.append({
                             "Gözetmen": i,
-                            "Toplam Mesai (dk)": solver.Value(total_mins[i]),
-                            "Büyük Sınıf Mesaisi (dk)": solver.Value(big_mins[i]),
-                            "Sabah Görevi": solver.Value(morn_cnt[i]),
-                            "Akşam Görevi": solver.Value(eve_cnt[i]),
-                            "Kritik Toplam (S+A)": solver.Value(critical_sum[i])
+                            "Toplam Mesai (dk)": solver.Value(total_mins[i])
                         })
                     st.table(pd.DataFrame(report))
 
-                with t3:
+                with tab3:
                     st.info("### 🧠 Sistem Çalışma Metodolojisi")
-                    st.markdown(f"""
-                    Bu dağıtım planı, **Google OR-Tools (Constraint Programming)** kütüphanesi kullanılarak oluşturulmuştur. Sistem, milyonlarca olası atama kombinasyonunu saniyeler içinde tarayarak belirlediğiniz strateji ağırlıklarına göre en dengeli sonucu üretir.
+                    st.markdown("""
+                    **1. Optimizasyon Motoru:**
+                    Sistem, **Google OR-Tools (Constraint Programming)** kütüphanesini kullanır. Bu motor, milyonlarca olasılığı matematiksel kısıtlar altında tarayarak en dengeli atamayı bulur.
 
-                    #### ⚖️ Optimizasyon Hiyerarşisi
-                    Sistem, aşağıdaki kriterler arasındaki farkı (eşitsizliği) minimize etmeye odaklanır:
-                    - **Mesai Dengesi:** Toplam sınav sürelerinin homojenize edilmesi.
-                    - **Salon Rotasyonu:** Büyük salonlardaki görev yükünün eşit dağıtılması.
-                    - **Zaman Dilimi Adaleti:** Sabah ve akşam sınavlarının kendi içlerinde ve toplamda dengelenmesi.
+                    **2. Sert Kısıtlar:**
+                    - **Çakışma Kontrolü:** Bir personel aynı anda iki farklı mekanda bulunamaz.
+                    - **Yorgunluk Yönetimi:** Bir personele günlük en fazla **4 görev** atanabilir.
+                    - **Nöbet Dinlenmesi:** Akşam sınavından çıkan personel, ertesi sabahın ilk sınavına atanamaz.
 
-                    #### 🛡️ Uygulanan Sert Kısıtlar (Garantiler)
-                    Atama yapılırken aşağıdaki kurallar sistem tarafından **asla ihlal edilemez**:
-                    1. **Çakışma Önleme:** Bir personel, aynı zaman diliminde iki farklı sınavda görevlendirilemez.
-                    2. **Nöbet Dinlenme Kuralı:** Akşam sınavından sonraki sabahın ilk sınavına atama yapılmaz.
-                    3. **Kapasite Yönetimi:** Günlük iş yükü **4 sınav** ile sınırlandırılmıştır.
-                    4. **Muafiyet Kontrolü:** - **Günlük:** Belirtilen günlerde personel görev almaz.
-                        - **Aralık Bazlı Saatlik:** Belirlenen saat dilimiyle (Örn: 16:00-20:00) çakışan hiçbir sınava atama yapılmaz.
+                    **3. Muafiyet Mantığı:**
+                    Zaman aralığı muafiyetleri (Örn: 08:00-12:00) sınavın başlangıç saati ve süresiyle matematiksel olarak karşılaştırılır. Kesişme olan hiçbir sınav personele atanmaz.
                     """)
             else:
-                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı veya muafiyetleri esnetmeyi deneyin.")
-else:
-    st.info("Lütfen sol taraftaki menüyü kullanarak sınav takviminizi (XML) yükleyin.")
+                st.error("Çözüm bulunamadı! Lütfen personel sayısını artırmayı veya kısıtları gevşetmeyi deneyin.")
