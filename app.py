@@ -1,5 +1,4 @@
 import streamlit as st
-import pd
 import pandas as pd
 import xml.etree.ElementTree as ET
 from ortools.sat.python import cp_model
@@ -220,3 +219,4 @@ if uploaded_file:
 
             else: 
                 st.error("❌ Belirtilen kısıtlar altında uygun bir çözüm bulunamadı! Lütfen personel sayısını artırmayı veya muafiyetleri azaltmayı deneyin.")
+
