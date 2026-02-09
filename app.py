@@ -25,22 +25,20 @@ def parse_excel(file):
     
     day_map = {
         "PAZARTESI": 0, "PAZARTESİ": 0, "SALI": 1, "ÇARŞAMBA": 2, "CARŞAMBA": 2, 
-        "PERŞEMBE": 3, "PERŞEMBE": 3, "CUMA": 4, "CUMARTESİ": 5, "CUMARTESİ": 5, "PAZAR": 6
+        "PERŞEMBE": 3, "PERŞEMBE": 3, "CUMA": 4, "CUMARTESİ": 5, "PAZAR": 6
     }
     
     raw_rows = []
     current_week = 1
     prev_day_idx = -1
-    seen_days_in_week = set()
     
     for _, row in df.iterrows():
         if pd.isna(row.get('GÜN')) or pd.isna(row.get('SAAT')): continue
         
         gun_raw = str(row['GÜN']).strip().upper()
-        # Gün ismini normalize et (Örn: "Cuma\n14/11" -> "CUMA")
+        # Gün ismini temizle ve normalize et
         gun_temiz = re.sub(r'[^A-ZÇĞİÖŞÜ]', '', gun_raw.replace('İ', 'I')).replace('I', 'İ')
         
-        # Gün sırasını bul
         curr_day_idx = -1
         for key, val in day_map.items():
             if key in gun_temiz:
@@ -49,14 +47,11 @@ def parse_excel(file):
         
         if curr_day_idx == -1: continue
         
-        # Hafta Geçiş Kontrolü: Gün sırası geriye düştüyse veya aynı gün tekrarlandıysa
-        if curr_day_idx <= prev_day_idx or gun_temiz in seen_days_in_week:
+        # HAFTA TESPİTİ: Sadece gün sırası geriye düştüğünde (Cuma -> Pazartesi gibi) hafta artar
+        if prev_day_idx != -1 and curr_day_idx < prev_day_idx:
             current_week += 1
-            seen_days_in_week = set()
             
-        seen_days_in_week.add(gun_temiz)
         prev_day_idx = curr_day_idx
-        
         gun_etiket = f"{gun_temiz.capitalize()} ({current_week}. Hafta)"
         
         ders_adi = str(row.get('DERSLER', 'Bilinmeyen Ders'))
@@ -78,7 +73,7 @@ def parse_excel(file):
                 'bas_str': bas_str.strip()
             })
 
-    # Sabah/Akşam Etiketleme
+    # Sabah/Akşam Etiketleme ve Gün Bazlı Gruplama
     tasks = []
     all_rooms = set()
     unique_days = []
@@ -108,8 +103,8 @@ staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, v
 
 st.sidebar.divider()
 st.sidebar.subheader("🚫 Görev Muafiyet Tanımları")
-unavailable_days_input = st.sidebar.text_area("Günlük Muafiyet (PersonelNo:Gün)", placeholder="Örn: 1:Pazartesi (1. Hafta)")
-unavailable_times_input = st.sidebar.text_area("Saatlik Muafiyet (PersonelNo:Saat)", placeholder="Örn: 1:16:00-21:00")
+unavailable_days_input = st.sidebar.text_area("Günlük Muafiyet", placeholder="Örn: 1:Pazartesi (1. Hafta)")
+unavailable_times_input = st.sidebar.text_area("Saatlik Muafiyet", placeholder="Örn: 1:16:00-21:00")
 
 st.sidebar.divider()
 st.sidebar.header("🎯 Dağılım Stratejileri")
@@ -133,6 +128,7 @@ if uploaded_file:
                 num_t = len(tasks)
                 x = {(i, t): model.NewBoolVar(f'x_{i}_{t}') for i in invs for t in range(num_t)}
                 
+                # Saatlik muafiyeti olanları belirle
                 restricted_staff = set()
                 if unavailable_times_input:
                     for entry in unavailable_times_input.split(','):
@@ -157,6 +153,7 @@ if uploaded_file:
                 for t in range(num_t):
                     model.Add(sum(x[i, t] for i in invs) == 1)
 
+                # Muafiyet kısıtları
                 if unavailable_days_input:
                     for entry in unavailable_days_input.split(','):
                         try:
@@ -178,6 +175,7 @@ if uploaded_file:
                                 if s_no in invs and max(ts, ex_s) < min(te, ex_e): model.Add(x[s_no, idx] == 0)
                         except: continue
 
+                # İstatistik ve Dengeleme Değişkenleri
                 total_mins, big_mins, total_exams, morn_cnt, eve_cnt, critical_sum = {}, {}, {}, {}, {}, {}
                 for i in invs:
                     total_mins[i] = model.NewIntVar(0, 10000, f'tm_{i}')
@@ -186,6 +184,7 @@ if uploaded_file:
                     morn_cnt[i] = model.NewIntVar(0, 100, f'mc_{i}')
                     eve_cnt[i] = model.NewIntVar(0, 100, f'ec_{i}')
                     critical_sum[i] = model.NewIntVar(0, 200, f'cs_{i}')
+                    
                     model.Add(total_mins[i] == sum(x[i, t] * tasks[t]['Süre (Dakika)'] for t in range(num_t)))
                     model.Add(big_mins[i] == sum(x[i, t] * tasks[t]['Süre (Dakika)'] for t in range(num_t) if tasks[t]['Sınav Salonu'] in big_rooms))
                     model.Add(total_exams[i] == sum(x[i, t] for t in range(num_t)))
@@ -193,6 +192,7 @@ if uploaded_file:
                     model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Akşam'))
                     model.Add(critical_sum[i] == morn_cnt[i] + eve_cnt[i])
 
+                # KATİ ADALET KURALI: Max Sınav - Min Sınav <= 2
                 max_e, min_e = model.NewIntVar(0, 100, 'max_e'), model.NewIntVar(0, 100, 'min_e')
                 model.AddMaxEquality(max_e, [total_exams[i] for i in invs])
                 model.AddMinEquality(min_e, [total_exams[i] for i in invs])
@@ -206,7 +206,9 @@ if uploaded_file:
                     d = model.NewIntVar(0, 10000, f'd_{name}'); model.Add(d == ma - mi)
                     return d
 
+                # Saatlik muafiyeti olanları belirli dengelerden hariç tut
                 scoring_invs = [i for i in invs if i not in restricted_staff]
+
                 model.Minimize(
                     get_diff(total_mins, invs, "t") * w_total * 100 +
                     get_diff(big_mins, invs, "b") * w_big * 100 +
@@ -239,50 +241,45 @@ if uploaded_file:
                     with tab2:
                         stats = []
                         for i in invs:
+                            tag = " (Muaf)" if i in restricted_staff else ""
                             stats.append({
-                                "Personel": f"{i}{' (Muaf)' if i in restricted_staff else ''}", 
-                                "Top. Mesai (Dk)": solver.Value(total_mins[i]), 
-                                "Büyük Salon (Dk)": solver.Value(big_mins[i]),
-                                "Toplam Sınav Sayısı": solver.Value(total_exams[i]),
-                                "Sabah Seansı": solver.Value(morn_cnt[i]), 
-                                "Akşam Seansı": solver.Value(eve_cnt[i]), 
+                                "Personel": f"{i}{tag}", "Top. Mesai (Dk)": solver.Value(total_mins[i]), 
+                                "Büyük Salon (Dk)": solver.Value(big_mins[i]), "Toplam Sınav Sayısı": solver.Value(total_exams[i]),
+                                "Sabah Seansı": solver.Value(morn_cnt[i]), "Akşam Seansı": solver.Value(eve_cnt[i]), 
                                 "Kritik Seans Toplamı": solver.Value(critical_sum[i])
                             })
                         st.table(pd.DataFrame(stats))
                     
                     with tab3:
                         st.subheader("Sistem Çalışma Prensipleri")
+                        st.write("Bu yazılım, personel görevlendirme sürecini kurumsal standartlara ve adalet ilkelerine göre yönetir. Sistemin işleyiş detayları aşağıda belirtilmiştir:")
+
+                        st.markdown("### Görev Tanımlama ve Hafta Tespiti")
                         st.write("""
-                        Bu yazılım, personel görevlendirme sürecini kurumsal standartlara ve adalet ilkelerine göre yönetir. Sistemin işleyiş detayları aşağıda belirtilmiştir:
-                        """)
+                        Sistem, yüklenen programı otomatik olarak analiz eder. Günlerin sırasını takip ederek, takvimin hangi kısımlarının birinci haftaya, hangi kısımlarının ikinci haftaya ait olduğunu anlar. Örneğin, Cuma gününden sonra tekrar Pazartesi gününe ait kayıtlar gelmişse, sistem bunu yeni bir hafta olarak algılar ve çizelgede buna göre isimlendirme yapar. 
                         
-                        st.markdown("### Görev Tanımlama ve Sınıflandırma")
-                        st.write("""
-                        Sistem, yüklenen programı otomatik olarak haftalara ayırır. Günlerin sırasını takip ederek, programın hangi bölümlerinin 1. hafta, hangi bölümlerinin 2. hafta olduğunu tespit eder. 
-                        Her takvim gününün başlayan ilk sınavı, o günün açılış görevi olması nedeniyle sistem tarafından otomatik olarak 'Sabah Seansı' olarak işaretlenir. 
-                        Saat 16:00 ve sonrasında başlayan tüm görevler ise 'Akşam Mesaisi' olarak sınıflandırılır.
+                        Her takvim gününün gerçekleşen ilk sınavı, günün açılış görevi olması sebebiyle otomatik olarak Sabah Seansı olarak kabul edilir. Günlük programda saat 16:00 ve sonrasında başlayan sınavlar ise Akşam Mesaisi olarak sınıflandırılır.
                         """)
 
-                        st.markdown("### Kurallar ve Kısıtlamalar")
+                        st.markdown("### Sert Kurallar")
                         st.write("""
-                        Planlama oluşturulurken aşağıdaki temel kurallar sistem tarafından her zaman korunur:
-                        - Bir personel aynı zaman diliminde birden fazla sınavda görevlendirilemez; tüm çakışmalar otomatik olarak önlenir.
-                        - Personel iş yükünü dengelemek adına, hiçbir personele bir gün içerisinde 4 sınavdan fazla görev verilmez.
-                        - En kritik kural olarak; tüm süreç boyunca en çok görev alan personel ile en az görev alan personel arasındaki fark 2 sınavı asla geçemez. Bu sayede görevler tüm personele homojen bir şekilde yayılır.
-                        - Kullanıcı tarafından tanımlanan günlük veya saatlik muafiyetler sisteme en öncelikli kural olarak işlenir ve bu zamanlarda personele görev yazılmaz.
+                        Planlama oluşturulurken aşağıdaki temel kurallar sistem tarafından her zaman korunur ve asla esnetilmez:
+                        - Bir personel aynı zaman diliminde birden fazla sınavda görevlendirilemez. Tüm zaman çakışmaları sistem tarafından otomatik olarak engellenir.
+                        - Personel iş yükünü makul düzeyde tutmak amacıyla, bir personelin bir günde girebileceği maksimum sınav sayısı dörttür.
+                        - Görev dağılımında kesin bir adalet sağlanması için, tüm program boyunca en fazla görev alan personel ile en az görev alan personel arasındaki fark ikiden fazla olamaz. Bu kural, iş yükünün herkes için birbirine çok yakın olmasını garanti eder.
+                        - Kullanıcı tarafından sisteme girilen günlük izinler veya saatlik kısıtlamalar en öncelikli kural olarak kabul edilir ve bu saatlerde personele kesinlikle görev yazılmaz.
                         """)
 
-                        st.markdown("### İş Yükü Dağılımı ve Adalet")
+                        st.markdown("### İş Yükü Dağılımı ve Adalet Prensipleri")
                         st.write("""
-                        Sistem, sadece sınav sayılarını değil, personelin harcadığı toplam süreyi ve girdiği salonların büyüklüğünü de hesaba katar. Tüm bu veriler bütünleşik bir yapıda değerlendirilir. 
-                        Özellikle saatlik muafiyeti bulunan personeller, sabah veya akşam seansı gibi özel dengeleme hesaplamalarından çıkarılır. Bu sayede, kısıtlı bir personelin düşük olan seans sayısı, genel adalet tablosunu yanıltmaz ve diğer personel kendi içinde en adil şekilde gruplandırılmaya devam eder.
+                        Sistem sadece sınav sayılarını değil, personelin sınavda geçirdiği toplam süreyi ve büyük salonlarda aldığı görevleri de hesaba katar. Tüm veriler programın tamamı üzerinden bütünleşik bir yapıda değerlendirilir.
+                        
+                        Özellikle saat bazında muafiyeti olan personel, sabah veya akşam seansı gibi özel dengeleme hesaplamalarından çıkarılır. Bu sayede kısıtlı bir personelin mecburen düşük olan akşam seansı sayısı, genel ortalamayı etkilemez. Böylece diğer personeller kendi aralarında en adil şekilde dengelenmeye devam eder.
                         """)
 
                         st.markdown("### Verimlilik ve Akşam Görevleri")
                         st.write("""
-                        Personel verimliliğini artırmak ve gereksiz beklemeleri önlemek amacıyla sistem 'akıllı kümelenme' yöntemini kullanır. 
-                        Eğer bir personel o gün akşam seansına atanmışsa, sistem o personeli ikinci bir akşam sınavına atamaya öncelik verir. 
-                        Böylece bir personelin akşam kampüste bulunduğu sürede görevlerini tamamlaması sağlanırken, diğer personellerin akşam mesaisine kalmasına gerek kalmadan evlerine dönebilmeleri amaçlanır.
+                        Personel verimliliğini artırmak amacıyla sistem akıllı kümelenme yöntemini kullanır. Eğer bir personel o gün akşam seansına atanmışsa, sistem o personeli çakışmayan diğer akşam sınavlarına atamaya öncelik verir. Bu sayede bir personelin akşam kampüste bulunduğu sürede görevlerini tamamlaması hedeflenirken, diğer personellerin akşam mesaisine kalmasına gerek kalmadan görevlerini bitirmeleri sağlanır.
                         """)
                 else:
-                    st.error("❌ Uygun bir senaryo üretilemedi. ±2 sınav farkı kuralını karşılamak için personel sayısını artırabilir veya muafiyetleri esnetebilirsiniz.")
+                    st.error("❌ Uygun bir senaryo üretilemedi. ±2 sınav farkı kuralını karşılamak için personel sayısını artırabilir veya kısıtlamaları esnetebilirsiniz.")
