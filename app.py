@@ -21,26 +21,18 @@ def parse_xml(xml_content):
         for sinav in sinavlar:
             siniflar_text = sinav.find('siniflar').text
             sinif_listesi = [s.strip() for s in siniflar_text.split(',') if s.strip()]
-            
-            # Otomatik Etiketleme Mantığı (XML'de yoksa saate göre ata)
-            etiket = sinav.get('etiket', 'normal')
-            bas_saat = int(sinav.get('baslangic').split(':')[0])
-            if etiket == 'normal':
-                if bas_saat <= 10: etiket = 'sabah'
-                elif bas_saat >= 17: etiket = 'aksam'
-
             for s in sinif_listesi:
                 all_rooms.add(s)
                 tasks.append({
                     'gun': gun_adi, 'sinav': sinav.get('ad'), 
                     'saat': f"{sinav.get('baslangic')}-{sinav.get('bitis')}",
                     'baslangic': sinav.get('baslangic'), 'sinif': s,
-                    'sure': int(sinav.get('sure')), 'etiket': etiket,
+                    'sure': int(sinav.get('sure')), 'etiket': sinav.get('etiket', 'normal'),
                     'slot_id': f"{gun_adi}_{sinav.get('baslangic')}"
                 })
     return tasks, sorted(list(all_rooms)), days_order
 
-# --- YAN MENÜ ---
+# --- YAN MENÜ (AYARLAR VE ÖNCELİKLER) ---
 st.sidebar.header("⚙️ Operasyonel Ayarlar")
 uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (XML)", type=["xml"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
@@ -79,7 +71,9 @@ if uploaded_file:
                 
                 for d_idx, d in enumerate(days_list):
                     day_tasks = [idx for idx, t in enumerate(tasks) if t['gun'] == d]
+                    # Günlük limit 3'ten 4'e yükseltildi
                     model.Add(sum(x[i, idx] for idx in day_tasks) <= 4)
+                    
                     if d_idx < len(days_list) - 1:
                         today_last = [idx for idx, t in enumerate(tasks) if t['gun'] == d and t['etiket'] == 'aksam']
                         tomorrow_first = [idx for idx, t in enumerate(tasks) if t['gun'] == days_list[d_idx+1] and t['etiket'] == 'sabah']
@@ -122,7 +116,7 @@ if uploaded_file:
             solver = cp_model.CpSolver()
             solver.parameters.max_time_in_seconds = 30.0
             if solver.Solve(model) in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
-                st.success("✅ Dağıtım Planı başarıyla hazırlandı.")
+                st.success("✅ Planlama başarıyla optimize edildi.")
                 
                 final_res = []
                 for t_idx, t in enumerate(tasks):
@@ -133,6 +127,7 @@ if uploaded_file:
                             final_res.append(row)
                 
                 df = pd.DataFrame(final_res)
+                
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']].to_excel(writer, index=False)
@@ -141,7 +136,7 @@ if uploaded_file:
                 t1, t2, t3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Analizi", "📖 Metodoloji"])
                 
                 with t1:
-                    st.download_button("📥 Çizelgeyi Excel Olarak İndir", excel_data, "gorev_plani.xlsx")
+                    st.download_button("📥 Excel İndir", excel_data, "gorev_plani.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                     st.dataframe(df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']], use_container_width=True)
                 
                 with t2:
@@ -160,21 +155,12 @@ if uploaded_file:
                 with t3:
                     st.info("### 🧠 Sistem Çalışma Metodolojisi")
                     st.markdown(f"""
-                    **1. Matematiksel Motor:**
-                    Sistem, **Google OR-Tools** kütüphanesini temel alan bir *Constraint Programming (Kısıtlı Programlama)* modelidir. Verilen tüm kriterleri aynı anda değerlendirerek milyonlarca olası kombinasyon arasından en düşük 'ceza puanına' sahip olanı seçer.
-
-                    **2. Öncelik Hiyerarşisi (Ağırlıklı Optimizasyon):**
-                    Belirlediğiniz strateji ağırlıkları ({w_total}% Süre, {w_big}% Büyük Sınıf, vb.) modelin amaç fonksiyonuna katsayı olarak eklenir. Ağırlığı yüksek olan kriterdeki eşitsizlikler, çözüm puanını daha fazla etkilediği için sistem öncelikle o dengesizliği gidermeye çalışır.
-
-                    **3. Sert Kısıtlar (Asla Esnetilemez):**
-                    - **Çakışma Önleme:** Hiçbir personel aynı zaman diliminde iki farklı sınavda görevlendirilemez.
-                    - **Dinlenme Kuralı:** Gece geç saatte (17:00 sonrası) sınavdan çıkan bir personel, ertesi sabah erken (10:00 öncesi) bir sınava verilemez.
-                    - **Yorgunluk Yönetimi:** Bir personele bir gün içerisinde en fazla **4** görev atanabilir.
-
-                    **4. Otomatik Veri İşleme:**
-                    XML dosyasında açıkça `etiket="sabah"` veya `etiket="aksam"` belirtilmemiş olsa dahi, sistem sınavın başlangıç saatine göre (Sabah <= 10:00, Akşam >= 17:00) otomatik sınıflandırma yapar.
+                    **Sert Kısıtlar:**
+                    1. **Çakışma Kontrolü:** Bir personel aynı anda birden fazla yerde görev alamaz.
+                    2. **Dinlenme Kuralı:** Akşam sınavı sonrası ertesi sabah görevi matematiksel olarak yasaklanmıştır.
+                    3. **Yorgunluk Yönetimi:** Günlük maksimum sınav sayısı **4** ile sınırlandırılmıştır.
                     """)
             else:
-                st.error("Mevcut kısıtlar ve gözetmen sayısı ile uygun bir plan bulunamadı. Lütfen personel sayısını artırın.")
+                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı deneyin.")
 else:
-    st.info("Devam etmek için lütfen sol menüden sınav takviminizi (XML) yükleyiniz.")
+    st.info("Lütfen sol taraftaki menüyü kullanarak sınav takviminizi (XML) yükleyin.")
