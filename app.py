@@ -95,8 +95,8 @@ if 'stats' not in st.session_state: st.session_state.stats = None
 st.sidebar.header("⚙️ Sistem Parametreleri")
 uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (Excel)", type=["xlsx", "xls"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
-un_days = st.sidebar.text_area("Günlük Muafiyet (No:Gün)", placeholder="Örn: 4:Salı (1. Hafta)")
-un_times = st.sidebar.text_area("Saatlik Muafiyet (No:SaatAralığı)", placeholder="Örn: 3:16:00-21:00")
+un_days = st.sidebar.text_area("Günlük Muafiyet (No:Gün)", placeholder="4:Salı (1. Hafta)")
+un_times = st.sidebar.text_area("Saatlik Muafiyet (No:SaatAralığı)", placeholder="3:16:00-21:00")
 
 st.sidebar.divider()
 st.sidebar.header("🎯 İş Yükü Dağılım Stratejileri")
@@ -139,20 +139,14 @@ if uploaded_file:
                 
                 for t in range(num_t): model.Add(sum(x[i, t] for i in invs) == 1)
 
-                # Muafiyet Uygulamaları (Hafta Duyarlı)
+                # Muafiyet Uygulamaları
                 if un_days:
                     for entry in un_days.split(','):
                         try:
                             s_no, day_raw = entry.split(':')
-                            s_no = int(s_no.strip())
-                            day_raw = day_raw.strip().lower() # Örn: "salı (1. hafta)"
-                            
+                            s_no = int(s_no.strip()); day_raw = day_raw.strip().lower()
                             for idx, t in enumerate(tasks):
-                                if s_no in invs:
-                                    # Hem gün ismi hem de hafta bilgisi eşleşiyorsa kısıtla
-                                    # "salı (1. hafta)" metni t['Gün'] içinde geçiyor mu?
-                                    if day_raw in t['Gün'].lower():
-                                        model.Add(x[s_no, idx] == 0)
+                                if s_no in invs and day_raw in t['Gün'].lower(): model.Add(x[s_no, idx] == 0)
                         except: pass
                 
                 if un_times:
@@ -163,11 +157,10 @@ if uploaded_file:
                             ex_s, ex_e = to_min(t_range.split('-')[0]), to_min(t_range.split('-')[1])
                             for idx, t in enumerate(tasks):
                                 if s_no in invs:
-                                    if max(t['bas_dk'], ex_s) < min(t['bit_dk'], ex_e):
-                                        model.Add(x[s_no, idx] == 0)
+                                    if max(t['bas_dk'], ex_s) < min(t['bit_dk'], ex_e): model.Add(x[s_no, idx] == 0)
                         except: pass
 
-                # --- İSTATİSTİKLER VE DENGELEME ---
+                # --- İSTATİSTİKLER VE SERT DENGELEME ---
                 total_mins, total_exams, morn_cnt, eve_cnt, big_mins = {}, {}, {}, {}, {}
                 for i in invs:
                     total_mins[i] = model.NewIntVar(0, 10000, f'tm_{i}')
@@ -176,18 +169,24 @@ if uploaded_file:
                     morn_cnt[i] = model.NewIntVar(0, 100, f'mc_{i}')
                     eve_cnt[i] = model.NewIntVar(0, 100, f'ec_{i}')
                     
-                    # İstatistik Sayaçları (Sadece atama yapıldığında toplar)
                     model.Add(total_mins[i] == sum(x[i, t] * tasks[t]['Süre'] for t in range(num_t)))
                     model.Add(big_mins[i] == sum(x[i, t] * tasks[t]['Süre'] for t in range(num_t) if tasks[t]['Sınav Salonu'] in big_rooms))
                     model.Add(total_exams[i] == sum(x[i, t] for t in range(num_t)))
                     model.Add(morn_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Sabah'))
                     model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Akşam'))
 
-                # Katı İş Yükü Sınırı
-                max_e, min_e = model.NewIntVar(0, 100, 'max_e'), model.NewIntVar(0, 100, 'min_e')
-                model.AddMaxEquality(max_e, [total_exams[i] for i in invs])
-                model.AddMinEquality(min_e, [total_exams[i] for i in invs])
-                model.Add(max_e - min_e <= 2)
+                # 1. SERT KURAL: Toplam Görev Sayısı Dengesi (±2)
+                max_te, min_te = model.NewIntVar(0, 100, 'max_te'), model.NewIntVar(0, 100, 'min_te')
+                model.AddMaxEquality(max_te, [total_exams[i] for i in invs])
+                model.AddMinEquality(min_te, [total_exams[i] for i in invs])
+                model.Add(max_te - min_te <= 2)
+
+                # 2. SERT KURAL: Sabah Seansı Sayısı Dengesi (±2)
+                # Bu kural, kısıtlı personelin üzerine sabah yükü yığılmasını engeller.
+                max_mc, min_mc = model.NewIntVar(0, 100, 'max_mc'), model.NewIntVar(0, 100, 'min_mc')
+                model.AddMaxEquality(max_mc, [morn_cnt[i] for i in invs])
+                model.AddMinEquality(min_mc, [morn_cnt[i] for i in invs])
+                model.Add(max_mc - min_mc <= 2)
 
                 def get_diff(v_dict, subset, name):
                     if not subset: return 0
@@ -222,7 +221,7 @@ if uploaded_file:
                             "Akşam Seansı Sayısı": solver.Value(eve_cnt[i])
                         })
                     st.success("✅ Operasyonel görev planlaması başarıyla tamamlanmıştır.")
-                else: st.error("❌ Uygun plan bulunamadı.")
+                else: st.error("❌ Belirlenen kriterler dahilinde uygun bir plan bulunamadı. Lütfen kısıtlamaları kontrol edin.")
 
 # --- SONUÇLAR ---
 if st.session_state.results:
@@ -233,33 +232,20 @@ if st.session_state.results:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             res_df[['Gün', 'Ders Adı', 'Sınav Saati', 'Sınav Salonu', 'Görevli Personel']].to_excel(writer, index=False)
-        st.download_button("📥 Çizelgeyi Excel İndir", buffer.getvalue(), "plan.xlsx", key="final_dl_pers")
+        st.download_button("📥 Çizelgeyi Excel İndir", buffer.getvalue(), "plan.xlsx")
     with tab2: st.table(pd.DataFrame(st.session_state.stats))
     with tab3:
         st.subheader("Sistem Çalışma Prensipleri")
         st.write("Bu yazılım, sınav gözetmenliği planlama sürecini operasyonel verimlilik ve standartlaştırılmış dağılım prensipleri çerçevesinde yürütür.")
-        
-        st.info("Bu sistemin karar verme mekanizmasında Google tarafından geliştirilen OR-Tools (Operations Research Tools) kütüphanesi ve bu kütüphane bünyesindeki CP-SAT (Constraint Programming - Satisfiability) algoritması kullanılmıştır.")
+        st.info("Bu sistemin karar verme mekanizmasında Google tarafından geliştirilen OR-Tools kütüphanesi ve CP-SAT algoritması kullanılmıştır.")
 
         st.markdown("### Süreç Analizi ve Dönem Tespiti")
-        st.write("""
-        Sistem, yüklenen sınav takvimini satır satır tarayarak zaman çizelgesini oluşturur. Bu aşamada günlerin takvim akışı incelenir. 
-        Eğer programda günlerin sırası geriye dönüyorsa, örneğin Cuma gününden sonra tekrar Pazartesi gününe ait kayıtlar geliyorsa, 
-        sistem bunu yeni bir çalışma haftası olarak tanımlar. Muafiyet tanımları yapılırken 'Salı (1. Hafta)' gibi spesifik ifadeler kullanılarak 
-        on günlük süreçteki tekil günler kısıtlanabilmektedir.
-        """)
+        st.write("Sistem, günlerin takvim akışına göre hafta geçişlerini otomatik belirler. Her takvim gününün başlayan ilk sınavı 'Sabah Seansı' olarak tanımlanır.")
 
-        st.markdown("### Operasyonel Standartlar")
+        st.markdown("### Operasyonel Standartlar ve Sert Kısıtlar")
         st.write("""
-        - Bir personel aynı zaman diliminde birden fazla sınavda görevlendirilemez.
-        - Günlük maksimum görev sayısı dört ile sınırlandırılmıştır.
-        - Görev dağılım dengesinin sağlanması adına, en çok görev alan ile en az görev alan personel arasındaki fark ikiden fazla olamaz.
-        - Google CP-SAT algoritması, girilen tüm kısıtlamaları (günlük/saatlik muafiyetler) en öncelikli kurallar olarak işler.
-        """)
-
-        st.markdown("### İş Yükü Optimizasyonu")
-        st.write("""
-        Yazılım, görev sayılarını eşitlemenin yanı sıra personelin harcadığı toplam süreyi ve büyük kapasiteli salonlardaki mesai yükünü de dengeler. 
-        Tüm bu veriler bütünleşik bir yapıda, programın tamamı üzerinden matematiksel olarak optimize edilir. 
-        Google tarafından geliştirilen CP-SAT çözücüsü, karmaşık kısıtlar altında milyonlarca olasılığı saniyeler içinde tarayarak operasyonel verimliliği en üst düzeye çıkaran planı üretir.
+        - **Zaman Çakışması Kontrolü:** Bir personel aynı anda iki yerde olamaz.
+        - **Görev Sayısı Dengesi:** Programın tamamında en çok ve en az görev alan arasındaki fark ikiden fazla olamaz.
+        - **Seans Bazlı Denge:** Sabah seansı görevleri tüm personele eşit dağıtılmak zorundadır (Fark en fazla 2 olabilir).
+        - **Muafiyet Yönetimi:** Girilen tüm kısıtlamalar en öncelikli kural olarak işlenir.
         """)
