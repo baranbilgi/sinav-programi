@@ -37,6 +37,11 @@ st.sidebar.header("⚙️ Operasyonel Ayarlar")
 uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (XML)", type=["xml"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
 
+# Müsaitlik Durumu Girişi
+st.sidebar.divider()
+st.sidebar.subheader("🚫 Görev Muafiyetleri")
+unavailable_input = st.sidebar.text_area("İzinli Personel (Örn: 1:Pazartesi, 2:Sali)", help="Format: GözetmenNo:GünAdı")
+
 st.sidebar.divider()
 st.sidebar.header("🎯 Strateji Ağırlıkları (Toplam: 100)")
 w_total = st.sidebar.number_input("Toplam Süre Dengesi", 0, 100, 20)
@@ -64,6 +69,7 @@ if uploaded_file:
             # --- SERT KISITLAR ---
             for t in range(num_t):
                 model.Add(sum(x[i, t] for i in invs) == 1)
+            
             for i in invs:
                 for slot in set(t['slot_id'] for t in tasks):
                     overlap = [idx for idx, t in enumerate(tasks) if t['slot_id'] == slot]
@@ -72,12 +78,27 @@ if uploaded_file:
                 for d_idx, d in enumerate(days_list):
                     day_tasks = [idx for idx, t in enumerate(tasks) if t['gun'] == d]
                     model.Add(sum(x[i, idx] for idx in day_tasks) <= 4)
+                    
                     if d_idx < len(days_list) - 1:
                         today_last = [idx for idx, t in enumerate(tasks) if t['gun'] == d and t['etiket'] == 'aksam']
                         tomorrow_first = [idx for idx, t in enumerate(tasks) if t['gun'] == days_list[d_idx+1] and t['etiket'] == 'sabah']
                         for tl in today_last:
                             for tf in tomorrow_first:
                                 model.Add(x[i, tl] + x[i, tf] <= 1)
+
+            # --- MÜSAİTLİK KISITI (Özel Muafiyetler) ---
+            if unavailable_input:
+                for entry in unavailable_input.split(','):
+                    if ':' in entry:
+                        try:
+                            s_no_str, day_name = entry.split(':')
+                            s_no = int(s_no_str.strip())
+                            d_name = day_name.strip()
+                            if s_no in invs:
+                                for idx, t in enumerate(tasks):
+                                    if t['gun'] == d_name:
+                                        model.Add(x[s_no, idx] == 0)
+                        except: continue
 
             # --- ADALET DEĞİŞKENLERİ ---
             total_mins, big_mins, morn_cnt, eve_cnt, critical_sum = {}, {}, {}, {}, {}
@@ -121,7 +142,7 @@ if uploaded_file:
                     for i in invs:
                         if solver.Value(x[i, t_idx]):
                             row = t.copy()
-                            row['Gözetmen'] = i # Sadece sayısal değer
+                            row['Gözetmen'] = i
                             final_res.append(row)
                 
                 df = pd.DataFrame(final_res)
@@ -140,7 +161,7 @@ if uploaded_file:
                     report = []
                     for i in invs:
                         report.append({
-                            "Gözetmen": i, # Sadece sayısal değer
+                            "Gözetmen": i,
                             "Toplam Mesai (dk)": solver.Value(total_mins[i]),
                             "Büyük Sınıf Mesaisi (dk)": solver.Value(big_mins[i]),
                             "Sabah Görevi": solver.Value(morn_cnt[i]),
@@ -152,7 +173,7 @@ if uploaded_file:
                 with t3:
                     st.info("### 🧠 Sistem Çalışma Metodolojisi")
                     st.markdown(f"""
-                    Bu dağıtım planı, **Yapay Zeka temelli Optimizasyon (Constraint Programming)** teknikleri kullanılarak oluşturulmuştur. Sistem, milyonlarca olası atama kombinasyonunu saniyeler içinde tarayarak belirlediğiniz strateji ağırlıklarına göre en dengeli sonucu üretir.
+                    Bu dağıtım planı, **Google OR-Tools (Constraint Programming)** kütüphanesi kullanılarak oluşturulmuştur. Sistem, milyonlarca olası atama kombinasyonunu saniyeler içinde tarayarak belirlediğiniz strateji ağırlıklarına göre en dengeli sonucu üretir.
 
                     #### ⚖️ Optimizasyon Hiyerarşisi
                     Sistem, aşağıdaki kriterler arasındaki farkı (eşitsizliği) minimize etmeye odaklanır:
@@ -162,14 +183,12 @@ if uploaded_file:
 
                     #### 🛡️ Uygulanan Sert Kısıtlar (Garantiler)
                     Atama yapılırken aşağıdaki kurallar sistem tarafından **asla ihlal edilemez**:
-                    1. **Çakışma Önleme:** Bir personel, aynı zaman diliminde (çakışan saatlerde) birden fazla sınavda görevlendirilemez.
-                    2. **Nöbet Dinlenme Kuralı:** Akşam sınavında görev alan bir personel, dinlenme süresi gözetilerek ertesi sabahın ilk sınavına atanamaz.
-                    3. **Kapasite Yönetimi:** Bir personelin günlük iş yükü **4 sınav** ile sınırlandırılarak aşırı yorulma engellenmiştir.
-
-                    #### 🎯 Stratejik Ağırlıklandırma Etkisi
-                    Sidebar'da belirlediğiniz **%{w_total} Süre**, **%{w_big} Büyük Sınıf** vb. ağırlıklar, algoritmanın 'ceza puanı' sistemini belirler. Ağırlığı yüksek olan bir kriterde oluşacak en küçük bir dengesizlik, toplam çözüm puanını daha çok etkilediği için sistem önceliği o kriteri eşitlemeye verir.
+                    1. **Çakışma Önleme:** Bir personel, aynı zaman diliminde iki farklı sınavda görevlendirilemez.
+                    2. **Dinlenme Kuralı:** Akşam sınavında görev alan bir personel, ertesi sabahın ilk sınavına atanamaz.
+                    3. **Kapasite Yönetimi:** Bir personelin günlük iş yükü **4 sınav** ile sınırlandırılmıştır.
+                    4. **Muafiyet Kontrolü:** "Görev Muafiyetleri" alanında belirtilen personel-gün kısıtlamalarına tam uyum sağlanır.
                     """)
             else:
-                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı deneyin.")
+                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı veya muafiyetleri azaltmayı deneyin.")
 else:
     st.info("Lütfen sol taraftaki menüyü kullanarak sınav takviminizi (XML) yükleyin.")
