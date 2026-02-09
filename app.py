@@ -32,7 +32,6 @@ def parse_excel(file):
     current_week = 1
     prev_day_idx = -1
     
-    # İlk geçiş: Ham veriyi oku ve hafta bilgisini belirle
     for _, row in df.iterrows():
         if pd.isna(row.get('GÜN')) or pd.isna(row.get('SAAT')): continue
         
@@ -72,10 +71,7 @@ def parse_excel(file):
                 'bas_str': bas_str.strip(), 'Hafta': current_week
             })
 
-    # Toplam hafta sayısını belirle
     max_week = current_week
-    
-    # İkinci geçiş: Seans etiketleme
     tasks = []
     all_rooms = set()
     unique_days = []
@@ -91,15 +87,11 @@ def parse_excel(file):
         
         for t in day_tasks:
             label = 'Normal'
-            # Sabah Tanımı: Her zaman günün ilk sınavı
             if t['bas_dk'] == min_start:
                 label = 'Sabah'
-            # Akşam Tanımı: Hafta sayısına göre değişir
             if max_week >= 2:
-                # 2 haftalık program: Günün son sınavı
                 if t['bas_dk'] == max_start: label = 'Akşam'
             else:
-                # Tek haftalık program: 16:00 kuralı (960 dk)
                 if t['bas_dk'] >= 960: label = 'Akşam'
             
             t['Mesai Türü'] = label
@@ -201,7 +193,6 @@ if uploaded_file:
                     model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Akşam'))
                     model.Add(critical_sum[i] == morn_cnt[i] + eve_cnt[i])
 
-                # İŞ YÜKÜ FARKI SINIRI: Max - Min <= 2
                 max_e, min_e = model.NewIntVar(0, 100, 'max_e'), model.NewIntVar(0, 100, 'min_e')
                 model.AddMaxEquality(max_e, [total_exams[i] for i in invs])
                 model.AddMinEquality(min_e, [total_exams[i] for i in invs])
@@ -236,7 +227,7 @@ if uploaded_file:
                                 row = t.copy(); row['Görevli Personel'] = i; res.append(row)
                     
                     df_res = pd.DataFrame(res)
-                    tab1, tab2, tab3 = st.tabs(["📋 Görev Çizelgesi", "📊 Hakkaniyetli Görev Dağılım Analizi", "📖 Uygulama Metodolojisi"])
+                    tab1, tab2, tab3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Dağılım Analizi", "📖 Uygulama Metodolojisi"])
                     with tab1:
                         final_df = df_res[['Gün', 'Ders Adı', 'Sınav Saati', 'Sınav Salonu', 'Görevli Personel']]
                         st.dataframe(final_df, use_container_width=True)
@@ -259,35 +250,35 @@ if uploaded_file:
                     
                     with tab3:
                         st.subheader("Sistem Çalışma Prensipleri")
-                        st.write("Bu yazılım, sınav gözetmenliği planlama sürecini operasyonel verimlilik ve hakkaniyetli dağılım ilkeleri çerçevesinde yürütür.")
+                        st.write("Bu yazılım, sınav gözetmenliği planlama sürecini operasyonel verimlilik ve standartlaştırılmış dağılım prensipleri çerçevesinde yürütür.")
 
                         st.markdown("### Süreç Analizi ve Dönem Tespiti")
                         st.write("""
-                        Sistem, yüklenen takvimi detaylı bir şekilde tarayarak hafta geçişlerini otomatik olarak belirler. Günlerin takvim akışına göre (örneğin Cuma'dan sonra Pazartesi'ye dönüş) programın kaç haftadan oluştuğunu anlar ve çizelgeyi buna göre isimlendirir. 
+                        Sistem, yüklenen takvimi detaylı bir şekilde tarayarak hafta geçişlerini otomatik olarak belirler. Günlerin kronolojik akışına göre programın kaç haftadan oluştuğunu tespit eder ve çizelgeyi bu veriye dayanarak isimlendirir. 
                         
-                        Her takvim gününün başlayan ilk sınavı 'Sabah Seansı' olarak damgalanır. 'Akşam Mesaisi' tanımı ise programın süresine göre dinamik olarak değişir: 
-                        Tek haftalık programlarda saat 16:00 ve sonrası esas alınırken; çok haftalık programlarda o günün gerçekleşen en son sınavı akşam seansı olarak kabul edilir.
+                        Her takvim gününün başlayan ilk sınavı 'Sabah Seansı' olarak tanımlanır. 'Akşam Mesaisi' parametresi ise programın toplam süresine göre dinamik olarak ayarlanır: 
+                        Tek haftalık programlarda saat 16:00 ve sonrası ölçüt alınırken; çok haftalık programlarda o günün gerçekleşen en son sınavı akşam seansı olarak kabul edilir.
                         """)
 
                         st.markdown("### Operasyonel Standartlar")
                         st.write("""
-                        Görev dağılımı yapılırken aşağıdaki kurallar sistem tarafından her zaman uygulanır:
+                        Görev dağılımı sırasında aşağıdaki kriterler sistem tarafından her zaman uygulanır:
                         - Bir personel aynı zaman aralığında yalnızca tek bir sınav salonunda görev alabilir; zaman çakışmaları tamamen engellenmiştir.
-                        - Günlük iş yükünü dengede tutmak adına, bir personelin bir takvim günü içerisindeki maksimum görev sayısı dört ile sınırlandırılmıştır.
-                        - Hakkaniyetli dağılımı garanti altına almak amacıyla, programın tamamı boyunca en çok görev alan personel ile en az görev alan personel arasındaki fark ikiden fazla olamaz.
-                        - Tanımlanan tüm personel muafiyetleri sisteme öncelikli kural olarak işlenir ve kısıtlı zaman dilimlerinde atama yapılmaz.
+                        - İş yükü dengesini korumak adına, bir personelin bir takvim günü içerisindeki maksimum görev sayısı dört ile sınırlandırılmıştır.
+                        - Personeller arası görev dağılımı dengesini sağlamak amacıyla, programın tamamı boyunca en çok görev alan personel ile en az görev alan personel arasındaki fark ikiden fazla olamaz.
+                        - Tanımlanan tüm personel muafiyetleri sisteme öncelikli kısıt olarak işlenir ve bu zaman dilimlerinde atama yapılmaz.
                         """)
 
                         st.markdown("### İş Yükü Optimizasyonu")
                         st.write("""
-                        Yazılım, görev sayılarını eşitlemenin ötesinde personelin harcadığı toplam süreyi ve büyük kapasiteli salonlardaki mesai yükünü de dengeler. Tüm bu veriler bütünleşik bir yapıda, programın tamamı üzerinden optimize edilir.
+                        Yazılım, görev sayılarını eşitlemenin yanı sıra personelin harcadığı toplam süreyi ve büyük kapasiteli salonlardaki mesai yükünü de dengeler. Tüm bu veriler bütünleşik bir yapıda, programın tamamı üzerinden matematiksel olarak optimize edilir.
                         
-                        Saatlik bazda kısıtlaması bulunan personel, sabah veya akşam seansı gibi özel dağılım hesaplamalarının dışında tutulur. Bu yaklaşım, kısıtlı personelin mecburen düşük olan belirli seans sayılarının genel ortalamayı yanıltmasını önler ve diğer personellerin kendi aralarında en verimli şekilde dengelenmesini sağlar.
+                        Saatlik bazda kısıtlaması bulunan personel, sabah veya akşam seansı gibi özel dağılım hesaplamalarının dışında tutulur. Bu yaklaşım, kısıtlı personelin mecburen düşük olan belirli seans sayılarının genel dağılım performansını etkilemesini önler ve diğer personellerin kendi aralarında en verimli şekilde dengelenmesini sağlar.
                         """)
 
                         st.markdown("### Süreç Verimliliği")
                         st.write("""
-                        Personelin kampüs içerisinde geçirdiği zamanın verimli kullanılması temel hedeflerden biridir. Bu doğrultuda sistem, kümelenme yöntemini kullanarak bir personeli günün son görevlerine atarken mümkünse birden fazla akşam görevini aynı kişiye yönlendirir. Böylece personelin bulunduğu sürede görevlerini tamamlaması sağlanırken, diğer personellerin gereksiz yere geç saatlere kadar beklemesi önlenir.
+                        Personel verimliliğinin artırılması temel hedeflerden biridir. Bu doğrultuda sistem, kümelenme yöntemini kullanarak bir personeli günün son görevlerine atarken mümkünse birden fazla akşam görevini aynı kişiye yönlendirir. Böylece personelin kampüste bulunduğu sürede görevlerini tamamlaması sağlanırken, diğer personellerin süreç içerisinde operasyonel olarak en uygun zamanda görevlerini bitirmeleri amaçlanır.
                         """)
                 else:
                     st.error("❌ Belirlenen kriterler dahilinde uygun bir planlama üretilemedi. Personel sayısı ile görev yükü arasındaki dengeyi kontrol edebilir veya muafiyetleri esnetebilirsiniz.")
