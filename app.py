@@ -39,11 +39,12 @@ staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, v
 
 st.sidebar.divider()
 st.sidebar.header("🎯 Strateji Ağırlıkları (Toplam: 100)")
-w_total = st.sidebar.number_input("Toplam Süre Dengesi", 0, 100, 70)
+# Default değerler 5 kriter için %20 olarak ayarlandı
+w_total = st.sidebar.number_input("Toplam Süre Dengesi", 0, 100, 20)
 w_big = st.sidebar.number_input("Büyük Sınıf Dengesi", 0, 100, 20)
-w_morn = st.sidebar.number_input("Sabah Sınavı Dengesi", 0, 100, 4)
-w_eve = st.sidebar.number_input("Akşam Sınavı Dengesi", 0, 100, 4)
-w_sa_total = st.sidebar.number_input("S+A Toplam Sayı Dengesi", 0, 100, 2)
+w_morn = st.sidebar.number_input("Sabah Sınavı Dengesi", 0, 100, 20)
+w_eve = st.sidebar.number_input("Akşam Sınavı Dengesi", 0, 100, 20)
+w_sa_total = st.sidebar.number_input("S+A Toplam Sayı Dengesi", 0, 100, 20)
 
 total_weight = w_total + w_big + w_morn + w_eve + w_sa_total
 st.sidebar.write(f"**Güncel Toplam: {total_weight}**")
@@ -54,7 +55,7 @@ if uploaded_file:
     
     if st.sidebar.button("Planlamayı Optimize Et"):
         if total_weight != 100:
-            st.sidebar.error(f"⚠️ Hata: Ağırlıkların toplamı 100 olmalıdır! (Şu an: {total_weight})")
+            st.sidebar.error(f"⚠️ Hata: Ağırlıkların toplamı tam olarak 100 olmalıdır! (Şu an: {total_weight}). Lütfen dağılımı düzeltiniz.")
         else:
             model = cp_model.CpModel()
             invs = list(range(1, staff_count + 1))
@@ -102,7 +103,7 @@ if uploaded_file:
                 model.Add(diff == ma - mi)
                 return diff
 
-            # --- AMAÇ FONKSİYONU (Ağırlıklı) ---
+            # --- AMAÇ FONKSİYONU ---
             model.Minimize(
                 get_diff_var(total_mins, "t") * w_total * 100 +
                 get_diff_var(big_mins, "b") * w_big * 100 +
@@ -114,7 +115,7 @@ if uploaded_file:
             solver = cp_model.CpSolver()
             solver.parameters.max_time_in_seconds = 30.0
             if solver.Solve(model) in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
-                st.success("✅ Planlama başarıyla tamamlandı.")
+                st.success("✅ Planlama başarıyla optimize edildi.")
                 
                 final_res = []
                 for t_idx, t in enumerate(tasks):
@@ -126,7 +127,7 @@ if uploaded_file:
                 
                 df = pd.DataFrame(final_res)
                 
-                # Excel Hazırlama
+                # Excel Dosyası Oluşturma
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']].to_excel(writer, index=False)
@@ -152,16 +153,20 @@ if uploaded_file:
                     st.table(pd.DataFrame(report))
 
                 with t3:
-                    st.info("### 🧠 Sistem Çalışma Mantığı")
-                    st.write(f"Bu dağıtım, belirlediğiniz strateji ağırlıklarına göre optimize edilmiştir: **Süre ({w_total}%)**, **Büyük Sınıf ({w_big}%)**, **Sabah ({w_morn}%)**, **Akşam ({w_eve}%)**, **S+A ({w_sa_total}%)**.")
-                    st.markdown("""
-                    - **Matematiksel Model:** Google OR-Tools (Constraint Programming) kütüphanesi kullanılarak milyonlarca olası kombinasyon taranmıştır.
-                    - **Öncelik Yönetimi:** Belirlediğiniz ağırlıklar, algoritmanın 'cezalandırma' puanını belirler. Ağırlığı yüksek olan kriterde oluşan eşitsizlikler, toplam skoru daha fazla etkiler.
-                    - **Sert Kurallar:** 1. Hiçbir gözetmen aynı anda iki sınavda olamaz.
-                        2. Akşam sınavından çıkan bir gözetmen ertesi sabah ilk sınava verilemez.
-                        3. Bir personele günde 3'ten fazla görev yazılamaz.
+                    st.info("### 🧠 Sistem Çalışma Metodolojisi")
+                    st.markdown(f"""
+                    Bu çizelge, belirlediğiniz stratejik ağırlık dengesine göre oluşturulmuştur: 
+                    **Süre ({w_total}%)**, **Büyük Sınıf ({w_big}%)**, **Sabah ({w_morn}%)**, **Akşam ({w_eve}%)**, **S+A ({w_sa_total}%)**.
+
+                    **Sistem Prensipleri:**
+                    - **Optimizasyon Motoru:** Google OR-Tools kullanılarak milyonlarca olasılık arasından en düşük 'regret' puanına sahip dağıtım seçilir.
+                    - **İş Yükü Dengesi:** Ağırlığı yüksek olan kriterler, dağıtım esnasında öncelikli olarak eşitlenmeye çalışılır.
+                    - **Sert Kısıtlar:**
+                        1. **Çakışma Kontrolü:** Bir personel aynı anda birden fazla yerde görev alamaz.
+                        2. **Dinlenme Kuralı:** Akşam sınavı sonrası ertesi sabah görevi matematiksel olarak yasaklanmıştır.
+                        3. **Yorgunluk Yönetimi:** Günlük maksimum sınav sayısı 3 ile sınırlandırılmıştır.
                     """)
             else:
-                st.error("Bu kısıtlar altında uygun plan bulunamadı.")
+                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını veya ağırlıkları kontrol edin.")
 else:
-    st.info("Devam etmek için lütfen sol menüden XML dosyasını yükleyiniz.")
+    st.info("Lütfen sol taraftaki menüyü kullanarak sınav takviminizi (XML) yükleyin.")
