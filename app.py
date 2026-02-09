@@ -47,7 +47,6 @@ def parse_excel(file):
         except:
             continue
 
-        # Kurumsal Tanım: 16:00 (960 dk) ve sonrası Akşam Mesaisidir.
         etiket = 'Normal'
         if bas_dakika is not None:
             if bas_dakika >= 960:
@@ -189,14 +188,13 @@ if uploaded_file:
                         for i in invs:
                             if solver.Value(x[i, t_idx]):
                                 row = t.copy()
-                                row['Görevli Personel'] = i # Sadece rakam (1, 2, 3...)
+                                row['Görevli Personel'] = i
                                 res.append(row)
                     
                     df_res = pd.DataFrame(res)
                     tab1, tab2, tab3 = st.tabs(["📋 Görev Çizelgesi", "📊 Görev Dağılım İstatistikleri", "📖 Uygulama Metodolojisi"])
                     
                     with tab1:
-                        # Mesai Türü sütunu kaldırıldı
                         final_df = df_res[['Gün', 'Ders Adı', 'Sınav Saati', 'Sınav Salonu', 'Görevli Personel']]
                         st.dataframe(final_df, use_container_width=True)
                         
@@ -212,7 +210,7 @@ if uploaded_file:
                                 "Personel": i, 
                                 "Top. Mesai (Dk)": solver.Value(total_mins[i]), 
                                 "Büyük Salon (Dk)": solver.Value(big_mins[i]), 
-                                "Toplam Sınav Sayısı": solver.Value(total_exams[i]), # Yeni eklenen sütun
+                                "Toplam Sınav Sayısı": solver.Value(total_exams[i]),
                                 "Sabah Seansı": solver.Value(morn_cnt[i]), 
                                 "Akşam Seansı": solver.Value(eve_cnt[i]), 
                                 "Kritik Seans Toplamı": solver.Value(critical_sum[i])
@@ -220,30 +218,34 @@ if uploaded_file:
                         st.table(pd.DataFrame(stats))
                     
                     with tab3:
-                        st.subheader("📚 Sistem Nasıl Çalışır? (Basitleştirilmiş Anlatım)")
+                        st.subheader("Sistem Nasıl Çalışır?")
                         st.markdown("""
                         Bu yazılım, personel görevlendirme sürecini insan hatasından arındırarak tamamen matematiksel verilerle çözer. İşte sistemin çalışma adımları:
 
                         ### 1. Veri Analizi ve Sınıflandırma
                         Excel dosyanızı yüklediğinizde sistem her sınavı tek tek inceler. Özellikle saat **16:00 ve sonrası** başlayan sınavları otomatik olarak **"Akşam Mesaisi"** olarak etiketler. Eğer bir sınavda birden fazla salon (Örn: 301-303) varsa, her salon için ayrı bir görev oluşturur.
 
-                        ### 2. Kurallar ve Yasaklar (Sert Kısıtlar)
-                        Algoritma, planı hazırlarken şu "asla bozulamaz" kuralları uygular:
+                        ### 2. Kurallar ve Yasaklar
+                        Algoritma, planı hazırlarken şu sert kısıtları uygular:
                         * **Aynı Anda Tek Görev:** Bir personel aynı saatte iki farklı salonda görevlendirilemez. Sistem çakışmaları %100 engeller.
                         * **Günlük Limit:** Personel verimliliğini korumak adına, hiçbir personele bir takvim gününde 4'ten fazla görev atanmaz.
                         * **Özel İstekler ve Muafiyetler:** Yan menüden girdiğiniz izinli günler veya kısıtlı saatler sistem tarafından öncelikli olarak işlenir; muaf personele o sürelerde görev yazılmaz.
 
-                        ### 3. Akıllı Verimlilik (Akşam Kümelenmesi)
+                        ### 3. Akıllı Verimlilik
                         Sistem, personelin kampüste geçirdiği zamanı verimli kullanmaya çalışır. Eğer bir personel o gün akşam sınavına (16:00 sonrası) atanmışsa, algoritma o personeli **ikinci bir akşam sınavına** atamak için önceliklendirir. Böylece, bir kişi o akşam kampüsteyken iki işi birden tamamlar, diğer personelin ise akşam mesaisine kalmasına gerek kalmaz.
 
-                        ### 4. Matematiksel Dengeleme (Yumuşak Kısıtlar)
-                        Sistem sadece atama yapmaz, aynı zamanda tüm personellerin yükünü en adil şekilde dağıtır. Algoritma saniyeler içinde binlerce farklı senaryoyu dener ve şunları birbirine eşitler:
+                        ### 4. Matematiksel Dengeleme
+                        Sistem sadece atama yapmaz, aynı zamanda tüm personellerin yükünü en adil şekilde dağıtır. Algoritma saniyeler içinde binlerce farklı senaryoyu dener ve belirlenen kriterler arasındaki farkı minimize eder. Süreç şu temel formül üzerinden yönetilir:
+                        """)
+                        
+                        st.latex(r"Minimize: \sum_{i \in Criteria} (Weight_i \times (Max_i - Min_i)) - Reward_{cluster}")
+                        
+                        st.markdown("""
+                        Bu formül sayesinde:
                         - Personellerin toplam çalıştığı dakika süresi,
                         - Toplam girilen sınav sayısı,
                         - Sabah erken gelme sıklığı,
-                        - Zorlu veya büyük salonlardaki görev dağılımı.
-                        
-                        Sonuç olarak, en çok çalışan personel ile en az çalışan personel arasındaki makas mümkün olan en dar seviyeye çekilir.
+                        - Zorlu veya büyük salonlardaki görev dağılımı birbirine en yakın seviyeye çekilir.
                         """)
                 else:
                     st.error("❌ Mevcut kısıtlar altında uygun bir senaryo üretilemedi. Personel sayısını artırmayı veya muafiyetleri azaltmayı deneyiniz.")
