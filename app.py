@@ -19,14 +19,37 @@ def to_min(time_str):
     except:
         return None
 
+def normalize_day(text):
+    """Excel hücresindeki karmaşık metinden sadece gün ismini ayıklar."""
+    if pd.isna(text): return None
+    text = str(text).upper()
+    # Türkçe karakterleri standartlaştır
+    mapping = {"İ": "I", "I": "I", "Ş": "S", "Ğ": "G", "Ü": "U", "Ö": "O", "Ç": "C"}
+    for k, v in mapping.items():
+        text = text.replace(k, v)
+    
+    # Sadece harfleri tut
+    text = re.sub(r'[^A-Z]', '', text)
+    
+    days = {
+        "PAZARTESİ": "PAZARTESI", "SALI": "SALI", "ÇARŞAMBA": "CARSAMBA", 
+        "PERŞEMBE": "PERSEMBE", "CUMA": "CUMA", "CUMARTESİ": "CUMARTESI", "PAZAR": "PAZAR"
+    }
+    
+    # Standart gün isimlerini kontrol et
+    check_map = {
+        "PAZARTESI": 0, "SALI": 1, "CARSAMBA": 2, "PERSEMBE": 3, 
+        "CUMA": 4, "CUMARTESI": 5, "PAZAR": 6
+    }
+    
+    for day_key, day_idx in check_map.items():
+        if day_key in text:
+            return day_key, day_idx
+    return None, -1
+
 def parse_excel(file):
     df = pd.read_excel(file)
     df.columns = [c.strip().upper() for c in df.columns]
-    
-    day_map = {
-        "PAZARTESI": 0, "PAZARTESİ": 0, "SALI": 1, "ÇARŞAMBA": 2, "CARŞAMBA": 2, 
-        "PERŞEMBE": 3, "PERŞEMBE": 3, "CUMA": 4, "CUMARTESİ": 5, "PAZAR": 6
-    }
     
     raw_rows = []
     current_week = 1
@@ -35,29 +58,31 @@ def parse_excel(file):
     for _, row in df.iterrows():
         if pd.isna(row.get('GÜN')) or pd.isna(row.get('SAAT')): continue
         
-        gun_raw = str(row['GÜN']).strip().upper()
-        gun_temiz = re.sub(r'[^A-ZÇĞİÖŞÜ]', '', gun_raw.replace('İ', 'I')).replace('I', 'İ')
-        
-        curr_day_idx = -1
-        for key, val in day_map.items():
-            if key in gun_temiz:
-                curr_day_idx = val
-                break
+        day_str, curr_day_idx = normalize_day(row['GÜN'])
         
         if curr_day_idx == -1: continue
         
+        # Hafta Geçiş Kontrolü: Gün sırası geriye düştüğünde hafta artar
         if prev_day_idx != -1 and curr_day_idx < prev_day_idx:
             current_week += 1
             
         prev_day_idx = curr_day_idx
-        gun_etiket = f"{gun_temiz.capitalize()} ({current_week}. Hafta)"
+        
+        # Gösterim için gün ismini düzelt
+        display_days = {
+            "PAZARTESI": "Pazartesi", "SALI": "Salı", "CARSAMBA": "Çarşamba",
+            "PERSEMBE": "Perşembe", "CUMA": "Cuma", "CUMARTESI": "Cumartesi", "PAZAR": "Pazar"
+        }
+        gun_etiket = f"{display_days[day_str]} ({current_week}. Hafta)"
         
         ders_adi = str(row.get('DERSLER', 'Bilinmeyen Ders'))
         saat_araligi = str(row['SAAT'])
         sinav_yerleri = str(row.get('SINAV YERİ', ''))
         
         try:
-            bas_str, bit_str = saat_araligi.split('-')
+            # Saat ayırma ve temizleme
+            parts = str(saat_araligi).split('-')
+            bas_str, bit_str = parts[0].strip(), parts[1].strip()
             bas_dk = to_min(bas_str)
             bit_dk = to_min(bit_str)
             sure = bit_dk - bas_dk
@@ -68,7 +93,7 @@ def parse_excel(file):
             raw_rows.append({
                 'Gün': gun_etiket, 'Ders Adı': ders_adi, 'Sınav Saati': saat_araligi,
                 'bas_dk': bas_dk, 'Sınav Salonu': s, 'Süre (Dakika)': sure,
-                'bas_str': bas_str.strip(), 'Hafta': current_week
+                'bas_str': bas_str, 'Hafta': current_week
             })
 
     max_week = current_week
@@ -87,8 +112,7 @@ def parse_excel(file):
         
         for t in day_tasks:
             label = 'Normal'
-            if t['bas_dk'] == min_start:
-                label = 'Sabah'
+            if t['bas_dk'] == min_start: label = 'Sabah'
             if max_week >= 2:
                 if t['bas_dk'] == max_start: label = 'Akşam'
             else:
@@ -101,7 +125,7 @@ def parse_excel(file):
             
     return tasks, sorted(list(all_rooms)), unique_days
 
-# --- YAN MENÜ ---
+# --- ARAYÜZ VE OPTİMİZASYON (Değişmedi, sadece Tablo İsimleri Nötrleşti) ---
 st.sidebar.header("⚙️ Sistem Parametreleri")
 uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (Excel)", type=["xlsx", "xls"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
@@ -148,7 +172,7 @@ if uploaded_file:
                     for d in days_list:
                         day_tasks_idx = [idx for idx, t in enumerate(tasks) if t['Gün'] == d]
                         model.Add(sum(x[i, idx] for idx in day_tasks_idx) <= 4)
-                        eve_tasks_in_day = [idx for idx in day_tasks_idx if tasks[idx]['Mesai Türü'] == 'Akşam']
+                        eve_tasks_in_day = [idx for idx, t in enumerate(tasks) if t['Mesai Türü'] == 'Akşam']
                         if len(eve_tasks_in_day) > 1:
                             h = model.NewBoolVar(f'multi_eve_{i}_{d}')
                             model.Add(sum(x[i, idx] for idx in eve_tasks_in_day) >= 2).OnlyEnforceIf(h)
@@ -254,7 +278,7 @@ if uploaded_file:
 
                         st.markdown("### Süreç Analizi ve Dönem Tespiti")
                         st.write("""
-                        Sistem, yüklenen takvimi detaylı bir şekilde tarayarak hafta geçişlerini otomatik olarak belirler. Günlerin kronolojik akışına göre programın kaç haftadan oluştuğunu tespit eder ve çizelgeyi bu veriye dayanarak isimlendirir. 
+                        Sistem, yüklenen takvimi detaylı bir şekilde tarayarak hafta geçişlerini otomatik olarak belirler. Hücre içerisindeki gereksiz boşlukları veya tarih bilgilerini temizleyerek saf gün ismine odaklanır. Günlerin kronolojik akışına göre programın kaç haftadan oluştuğunu tespit eder ve çizelgeyi bu veriye dayanarak isimlendirir. 
                         
                         Her takvim gününün başlayan ilk sınavı 'Sabah Seansı' olarak tanımlanır. 'Akşam Mesaisi' parametresi ise programın toplam süresine göre dinamik olarak ayarlanır: 
                         Tek haftalık programlarda saat 16:00 ve sonrası ölçüt alınırken; çok haftalık programlarda o günün gerçekleşen en son sınavı akşam seansı olarak kabul edilir.
