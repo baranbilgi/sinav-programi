@@ -3,10 +3,22 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from ortools.sat.python import cp_model
 import io
+import re
 
 # Sayfa Yapılandırması
 st.set_page_config(page_title="Gözetmen Planlama Sistemi", layout="wide")
 st.title("🏛️ Gözetmen Optimizasyon ve Görev Planlama Sistemi")
+
+# --- YARDIMCI FONKSİYONLAR ---
+def to_min(time_str):
+    """'08:00' veya '08.00' formatını gün başlangıcından itibaren dakikaya çevirir."""
+    if not time_str: return None
+    try:
+        clean_time = re.sub(r'[^0-9:]', ':', time_str.replace('.', ':')).strip()
+        h, m = map(int, clean_time.split(':'))
+        return h * 60 + m
+    except:
+        return None
 
 def parse_xml(xml_content):
     tree = ET.ElementTree(ET.fromstring(xml_content))
@@ -36,6 +48,22 @@ def parse_xml(xml_content):
 st.sidebar.header("⚙️ Operasyonel Ayarlar")
 uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (XML)", type=["xml"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
+
+# --- GÖREV MUAFİYETLERİ ---
+st.sidebar.divider()
+st.sidebar.subheader("🚫 Görev Muafiyetleri")
+
+unavailable_days_input = st.sidebar.text_area(
+    "1. Görev Muafiyeti Gün", 
+    placeholder="Örn: 1:Pazartesi, 2:Sali",
+    help="Format: GözetmenNo:GünAdı. Belirtilen personeli o günün tamamından muaf tutar."
+)
+
+unavailable_times_input = st.sidebar.text_area(
+    "2. Görev Muafiyeti Saat (Aralık)", 
+    placeholder="Örn: 1:16:00-20:00",
+    help="Format: GözetmenNo:Başlangıç-Bitiş. Belirtilen saat aralığına denk gelen sınavlara atama yapılmaz."
+)
 
 st.sidebar.divider()
 st.sidebar.header("🎯 Strateji Ağırlıkları (Toplam: 100)")
@@ -79,6 +107,40 @@ if uploaded_file:
                             for tf in tomorrow_first:
                                 model.Add(x[i, tl] + x[i, tf] <= 1)
 
+            # --- MUAFİYET MANTIĞI ENTEGRASYONU ---
+            # 1. Gün Bazlı Muafiyet
+            if unavailable_days_input:
+                for entry in unavailable_days_input.split(','):
+                    if ':' in entry:
+                        try:
+                            s_no_str, d_name = entry.split(':')
+                            s_no = int(s_no_str.strip())
+                            if s_no in invs:
+                                for idx, t in enumerate(tasks):
+                                    if t['gun'].strip().lower() == d_name.strip().lower():
+                                        model.Add(x[s_no, idx] == 0)
+                        except: continue
+
+            # 2. Saat Aralığı Muafiyeti (Haftalık)
+            if unavailable_times_input:
+                for entry in unavailable_times_input.split(','):
+                    if ':' in entry:
+                        try:
+                            parts = entry.split(':', 1)
+                            s_no = int(parts[0].strip())
+                            time_range = parts[1].strip()
+                            if '-' in time_range and s_no in invs:
+                                start_str, end_str = time_range.split('-')
+                                ex_start, ex_end = to_min(start_str), to_min(end_str)
+                                if ex_start is not None and ex_end is not None:
+                                    for idx, t in enumerate(tasks):
+                                        task_start = to_min(t['baslangic'])
+                                        task_end = task_start + t['sure']
+                                        # Kesişim kontrolü
+                                        if max(task_start, ex_start) < min(task_end, ex_end):
+                                            model.Add(x[s_no, idx] == 0)
+                        except: continue
+
             # --- ADALET DEĞİŞKENLERİ ---
             total_mins, big_mins, morn_cnt, eve_cnt, critical_sum = {}, {}, {}, {}, {}
             for i in invs:
@@ -121,7 +183,7 @@ if uploaded_file:
                     for i in invs:
                         if solver.Value(x[i, t_idx]):
                             row = t.copy()
-                            row['Gözetmen'] = i # Sadece sayısal değer
+                            row['Gözetmen'] = i 
                             final_res.append(row)
                 
                 df = pd.DataFrame(final_res)
@@ -140,7 +202,7 @@ if uploaded_file:
                     report = []
                     for i in invs:
                         report.append({
-                            "Gözetmen": i, # Sadece sayısal değer
+                            "Gözetmen": i,
                             "Toplam Mesai (dk)": solver.Value(total_mins[i]),
                             "Büyük Sınıf Mesaisi (dk)": solver.Value(big_mins[i]),
                             "Sabah Görevi": solver.Value(morn_cnt[i]),
@@ -152,7 +214,7 @@ if uploaded_file:
                 with t3:
                     st.info("### 🧠 Sistem Çalışma Metodolojisi")
                     st.markdown(f"""
-                    Bu dağıtım planı, **Yapay Zeka temelli Optimizasyon (Constraint Programming)** teknikleri kullanılarak oluşturulmuştur. Sistem, milyonlarca olası atama kombinasyonunu saniyeler içinde tarayarak belirlediğiniz strateji ağırlıklarına göre en dengeli sonucu üretir.
+                    Bu dağıtım planı, **Google OR-Tools (Constraint Programming)** kütüphanesi kullanılarak oluşturulmuştur. Sistem, milyonlarca olası atama kombinasyonunu saniyeler içinde tarayarak belirlediğiniz strateji ağırlıklarına göre en dengeli sonucu üretir.
 
                     #### ⚖️ Optimizasyon Hiyerarşisi
                     Sistem, aşağıdaki kriterler arasındaki farkı (eşitsizliği) minimize etmeye odaklanır:
@@ -165,11 +227,12 @@ if uploaded_file:
                     1. **Çakışma Önleme:** Bir personel, aynı zaman diliminde (çakışan saatlerde) birden fazla sınavda görevlendirilemez.
                     2. **Nöbet Dinlenme Kuralı:** Akşam sınavında görev alan bir personel, dinlenme süresi gözetilerek ertesi sabahın ilk sınavına atanamaz.
                     3. **Kapasite Yönetimi:** Bir personelin günlük iş yükü **4 sınav** ile sınırlandırılarak aşırı yorulma engellenmiştir.
-
-                    #### 🎯 Stratejik Ağırlıklandırma Etkisi
-                    Sidebar'da belirlediğiniz **%{w_total} Süre**, **%{w_big} Büyük Sınıf** vb. ağırlıklar, algoritmanın 'ceza puanı' sistemini belirler. Ağırlığı yüksek olan bir kriterde oluşacak en küçük bir dengesizlik, toplam çözüm puanını daha çok etkilediği için sistem önceliği o kriteri eşitlemeye verir.
+                    
+                    #### 🚫 Müsaitlik Durumu (Görev Muafiyetleri)
+                    - **Gün Bazlı Muafiyet:** Belirli günlerde izinli olan personele o gün boyunca görev atanmaz.
+                    - **Saat Aralığı Muafiyeti:** Hafta boyunca belirli bir zaman dilimiyle (Örn: 16:00-20:00) çakışan hiçbir sınava ilgili personel atanamaz.
                     """)
             else:
-                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı deneyin.")
+                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı veya muafiyetleri esnetmeyi deneyin.")
 else:
     st.info("Lütfen sol taraftaki menüyü kullanarak sınav takviminizi (XML) yükleyin.")
