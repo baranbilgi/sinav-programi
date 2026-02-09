@@ -38,13 +38,14 @@ uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (XML)", type=["xml"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
 
 st.sidebar.divider()
-st.sidebar.header("🎯 Öncelik Ağırlıkları (Toplam: 100)")
+st.sidebar.header("🎯 Strateji Ağırlıkları (Toplam: 100)")
 w_total = st.sidebar.number_input("Toplam Süre Dengesi", 0, 100, 70)
 w_big = st.sidebar.number_input("Büyük Sınıf Dengesi", 0, 100, 20)
-w_morn_eve = st.sidebar.number_input("Sabah/Akşam Kendi İçinde Eşitlik", 0, 100, 7)
-w_sa_total = st.sidebar.number_input("S+A Toplam Sayı Eşitliği", 0, 100, 3)
+w_morn = st.sidebar.number_input("Sabah Sınavı Dengesi", 0, 100, 4)
+w_eve = st.sidebar.number_input("Akşam Sınavı Dengesi", 0, 100, 4)
+w_sa_total = st.sidebar.number_input("S+A Toplam Sayı Dengesi", 0, 100, 2)
 
-total_weight = w_total + w_big + w_morn_eve + w_sa_total
+total_weight = w_total + w_big + w_morn + w_eve + w_sa_total
 st.sidebar.write(f"**Güncel Toplam: {total_weight}**")
 
 if uploaded_file:
@@ -53,7 +54,7 @@ if uploaded_file:
     
     if st.sidebar.button("Planlamayı Optimize Et"):
         if total_weight != 100:
-            st.sidebar.error("⚠️ Hata: Ağırlıkların toplamı tam olarak 100 olmalıdır! Lütfen değerleri düzeltin.")
+            st.sidebar.error(f"⚠️ Hata: Ağırlıkların toplamı 100 olmalıdır! (Şu an: {total_weight})")
         else:
             model = cp_model.CpModel()
             invs = list(range(1, staff_count + 1))
@@ -101,19 +102,19 @@ if uploaded_file:
                 model.Add(diff == ma - mi)
                 return diff
 
-            # --- AMAÇ FONKSİYONU (Kullanıcı Ağırlıklı) ---
+            # --- AMAÇ FONKSİYONU (Ağırlıklı) ---
             model.Minimize(
-                get_diff_var(total_mins, "t") * w_total * 100 + # Ölçeklendirme için 100 ile çarpıldı
+                get_diff_var(total_mins, "t") * w_total * 100 +
                 get_diff_var(big_mins, "b") * w_big * 100 +
-                get_diff_var(morn_cnt, "m") * w_morn_eve * 1000 + # Sayısal veriler (adet) daha yüksek çarpan ister
-                get_diff_var(eve_cnt, "e") * w_morn_eve * 1000 +
+                get_diff_var(morn_cnt, "m") * w_morn * 1000 + 
+                get_diff_var(eve_cnt, "e") * w_eve * 1000 +
                 get_diff_var(critical_sum, "c") * w_sa_total * 1000
             )
 
             solver = cp_model.CpSolver()
             solver.parameters.max_time_in_seconds = 30.0
             if solver.Solve(model) in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
-                st.success(f"✅ Belirlenen önceliklerle ({w_total}/{w_big}/{w_morn_eve}/{w_sa_total}) plan oluşturuldu.")
+                st.success("✅ Planlama başarıyla tamamlandı.")
                 
                 final_res = []
                 for t_idx, t in enumerate(tasks):
@@ -124,19 +125,43 @@ if uploaded_file:
                             final_res.append(row)
                 
                 df = pd.DataFrame(final_res)
-                t1, t2 = st.tabs(["📋 Çizelge", "📊 Analiz"])
-                with t1: st.dataframe(df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']], use_container_width=True)
+                
+                # Excel Hazırlama
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']].to_excel(writer, index=False)
+                excel_data = output.getvalue()
+
+                t1, t2, t3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Analizi", "📖 Metodoloji"])
+                
+                with t1:
+                    st.download_button("📥 Çizelgeyi Excel Olarak İndir", excel_data, "gorev_plani.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    st.dataframe(df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']], use_container_width=True)
+                
                 with t2:
                     report = []
                     for i in invs:
                         report.append({
                             "Gözetmen": f"Gözetmen {i}",
-                            "Süre (dk)": solver.Value(total_mins[i]),
-                            "Büyük Sınıf (dk)": solver.Value(big_mins[i]),
-                            "Sabah": solver.Value(morn_cnt[i]),
-                            "Akşam": solver.Value(eve_cnt[i]),
-                            "S+A Toplam": solver.Value(critical_sum[i])
+                            "Toplam Mesai (dk)": solver.Value(total_mins[i]),
+                            "Büyük Sınıf Mesaisi (dk)": solver.Value(big_mins[i]),
+                            "Sabah Görevi": solver.Value(morn_cnt[i]),
+                            "Akşam Görevi": solver.Value(eve_cnt[i]),
+                            "Kritik Toplam (S+A)": solver.Value(critical_sum[i])
                         })
                     st.table(pd.DataFrame(report))
+
+                with t3:
+                    st.info("### 🧠 Sistem Çalışma Mantığı")
+                    st.write(f"Bu dağıtım, belirlediğiniz strateji ağırlıklarına göre optimize edilmiştir: **Süre ({w_total}%)**, **Büyük Sınıf ({w_big}%)**, **Sabah ({w_morn}%)**, **Akşam ({w_eve}%)**, **S+A ({w_sa_total}%)**.")
+                    st.markdown("""
+                    - **Matematiksel Model:** Google OR-Tools (Constraint Programming) kütüphanesi kullanılarak milyonlarca olası kombinasyon taranmıştır.
+                    - **Öncelik Yönetimi:** Belirlediğiniz ağırlıklar, algoritmanın 'cezalandırma' puanını belirler. Ağırlığı yüksek olan kriterde oluşan eşitsizlikler, toplam skoru daha fazla etkiler.
+                    - **Sert Kurallar:** 1. Hiçbir gözetmen aynı anda iki sınavda olamaz.
+                        2. Akşam sınavından çıkan bir gözetmen ertesi sabah ilk sınava verilemez.
+                        3. Bir personele günde 3'ten fazla görev yazılamaz.
+                    """)
             else:
-                st.error("Bu kısıtlar ve ağırlıklarla çözüm bulunamadı.")
+                st.error("Bu kısıtlar altında uygun plan bulunamadı.")
+else:
+    st.info("Devam etmek için lütfen sol menüden XML dosyasını yükleyiniz.")
