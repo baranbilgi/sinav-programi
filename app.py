@@ -124,7 +124,6 @@ if uploaded_file:
                 for t in range(num_t):
                     model.Add(sum(x[i, t] for i in invs) == 1)
 
-                # Muafiyet Uygulamaları
                 if unavailable_days_input:
                     for entry in unavailable_days_input.split(','):
                         try:
@@ -147,15 +146,18 @@ if uploaded_file:
                                 if max(ts, ex_s) < min(te, ex_e): model.Add(x[s_no, idx] == 0)
                         except: continue
 
-                total_mins, big_mins, morn_cnt, eve_cnt, critical_sum = {}, {}, {}, {}, {}
+                total_mins, big_mins, morn_cnt, eve_cnt, critical_sum, total_exams = {}, {}, {}, {}, {}, {}
                 for i in invs:
                     total_mins[i] = model.NewIntVar(0, 10000, f'tm_{i}')
                     big_mins[i] = model.NewIntVar(0, 10000, f'bm_{i}')
+                    total_exams[i] = model.NewIntVar(0, 100, f'te_{i}')
                     morn_cnt[i] = model.NewIntVar(0, 100, f'mc_{i}')
                     eve_cnt[i] = model.NewIntVar(0, 100, f'ec_{i}')
                     critical_sum[i] = model.NewIntVar(0, 200, f'cs_{i}')
+                    
                     model.Add(total_mins[i] == sum(x[i, t] * tasks[t]['Süre (Dakika)'] for t in range(num_t)))
                     model.Add(big_mins[i] == sum(x[i, t] * tasks[t]['Süre (Dakika)'] for t in range(num_t) if tasks[t]['Sınav Salonu'] in big_rooms))
+                    model.Add(total_exams[i] == sum(x[i, t] for t in range(num_t)))
                     model.Add(morn_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Sabah'))
                     model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Akşam'))
                     model.Add(critical_sum[i] == morn_cnt[i] + eve_cnt[i])
@@ -186,13 +188,16 @@ if uploaded_file:
                     for t_idx, t in enumerate(tasks):
                         for i in invs:
                             if solver.Value(x[i, t_idx]):
-                                row = t.copy(); row['Görevli Personel'] = f"Personel {i}"; res.append(row)
+                                row = t.copy()
+                                row['Görevli Personel'] = i # Sadece rakam (1, 2, 3...)
+                                res.append(row)
                     
                     df_res = pd.DataFrame(res)
                     tab1, tab2, tab3 = st.tabs(["📋 Görev Çizelgesi", "📊 Görev Dağılım İstatistikleri", "📖 Uygulama Metodolojisi"])
                     
                     with tab1:
-                        final_df = df_res[['Gün', 'Ders Adı', 'Sınav Saati', 'Sınav Salonu', 'Görevli Personel', 'Mesai Türü']]
+                        # Mesai Türü sütunu kaldırıldı
+                        final_df = df_res[['Gün', 'Ders Adı', 'Sınav Saati', 'Sınav Salonu', 'Görevli Personel']]
                         st.dataframe(final_df, use_container_width=True)
                         
                         buffer = io.BytesIO()
@@ -204,9 +209,10 @@ if uploaded_file:
                         stats = []
                         for i in invs:
                             stats.append({
-                                "Personel": f"Personel {i}", 
+                                "Personel": i, 
                                 "Top. Mesai (Dk)": solver.Value(total_mins[i]), 
                                 "Büyük Salon (Dk)": solver.Value(big_mins[i]), 
+                                "Toplam Sınav Sayısı": solver.Value(total_exams[i]), # Yeni eklenen sütun
                                 "Sabah Seansı": solver.Value(morn_cnt[i]), 
                                 "Akşam Seansı": solver.Value(eve_cnt[i]), 
                                 "Kritik Seans Toplamı": solver.Value(critical_sum[i])
@@ -223,19 +229,21 @@ if uploaded_file:
 
                         ### 2. Kurallar ve Yasaklar (Sert Kısıtlar)
                         Algoritma, planı hazırlarken şu "asla bozulamaz" kuralları uygular:
-                        * **Aynı Anda Tek Görev:** Bir personel aynı saatte iki farklı salonda olamaz.
-                        * **Günlük Limit:** Hiçbir personele bir günde 4'ten fazla görev verilmez.
-                        * **Özel İstekler:** Sizin yan menüden girdiğiniz "Muafiyetler" (izinler veya saatlik kısıtlar) her zaman en öncelikli kuraldır.
+                        * **Aynı Anda Tek Görev:** Bir personel aynı saatte iki farklı salonda görevlendirilemez. Sistem çakışmaları %100 engeller.
+                        * **Günlük Limit:** Personel verimliliğini korumak adına, hiçbir personele bir takvim gününde 4'ten fazla görev atanmaz.
+                        * **Özel İstekler ve Muafiyetler:** Yan menüden girdiğiniz izinli günler veya kısıtlı saatler sistem tarafından öncelikli olarak işlenir; muaf personele o sürelerde görev yazılmaz.
 
                         ### 3. Akıllı Verimlilik (Akşam Kümelenmesi)
-                        Sistem, personelin kampüste geçirdiği zamanı verimli kullanmaya çalışır. Eğer bir personel o akşam bir sınava atanmışsa, algoritma o personeli **ikinci bir akşam sınavına** atamak için çaba sarf eder. Böylece, bir kişi akşam geç saate kadar kalırken diğer personelin evine erken gitmesi sağlanarak gereksiz mesai yayılımı önlenir.
+                        Sistem, personelin kampüste geçirdiği zamanı verimli kullanmaya çalışır. Eğer bir personel o gün akşam sınavına (16:00 sonrası) atanmışsa, algoritma o personeli **ikinci bir akşam sınavına** atamak için önceliklendirir. Böylece, bir kişi o akşam kampüsteyken iki işi birden tamamlar, diğer personelin ise akşam mesaisine kalmasına gerek kalmaz.
 
                         ### 4. Matematiksel Dengeleme (Yumuşak Kısıtlar)
-                        Sistem sadece atama yapmaz, aynı zamanda tüm personellerin yükünü eşitler. Algoritma trilyonlarca olasılığı hesaplar ve:
-                        - En çok çalışan ile en az çalışan arasındaki dakika farkını,
-                        - Sabah erken gelme sayılarını,
-                        - Zorlu (Büyük salon) sınav dağılımlarını,
-                        birbirine en yakın (adil) hale getirecek en iyi senaryoyu seçer.
+                        Sistem sadece atama yapmaz, aynı zamanda tüm personellerin yükünü en adil şekilde dağıtır. Algoritma saniyeler içinde binlerce farklı senaryoyu dener ve şunları birbirine eşitler:
+                        - Personellerin toplam çalıştığı dakika süresi,
+                        - Toplam girilen sınav sayısı,
+                        - Sabah erken gelme sıklığı,
+                        - Zorlu veya büyük salonlardaki görev dağılımı.
+                        
+                        Sonuç olarak, en çok çalışan personel ile en az çalışan personel arasındaki makas mümkün olan en dar seviyeye çekilir.
                         """)
                 else:
                     st.error("❌ Mevcut kısıtlar altında uygun bir senaryo üretilemedi. Personel sayısını artırmayı veya muafiyetleri azaltmayı deneyiniz.")
