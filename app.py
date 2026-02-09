@@ -49,7 +49,7 @@ def parse_excel(file):
         day_str, curr_day_idx = normalize_day(row['GÜN'])
         if curr_day_idx == -1: continue
         
-        # Sadece gün sırası geriye düştüğünde hafta artar
+        # Hafta geçiş tespiti (Gün sırası geriye düştüğünde)
         if prev_day_idx != -1 and curr_day_idx < prev_day_idx:
             current_week += 1
         prev_day_idx = curr_day_idx
@@ -82,6 +82,8 @@ def parse_excel(file):
         
     for d in unique_days:
         day_tasks = [t for t in raw_rows if t['Gün'] == d]
+        if not day_tasks: continue
+        
         min_start = min(t['bas_dk'] for t in day_tasks)
         max_start = max(t['bas_dk'] for t in day_tasks)
         for t in day_tasks:
@@ -98,8 +100,11 @@ def parse_excel(file):
     return tasks, sorted(list(all_rooms)), unique_days
 
 # --- OTURUM YÖNETİMİ ---
+# Sayfa yenilendiğinde verilerin kaybolmaması için session_state kullanımı
 if 'results' not in st.session_state:
     st.session_state.results = None
+if 'stats' not in st.session_state:
+    st.session_state.stats = None
 
 # --- YAN MENÜ ---
 st.sidebar.header("⚙️ Sistem Parametreleri")
@@ -127,7 +132,7 @@ if uploaded_file:
     
     if st.sidebar.button("Optimizasyon Sürecini Başlat"):
         if sum(weights.values()) != 100:
-            st.sidebar.error("⚠️ Ağırlık toplamı 100 olmalıdır.")
+            st.sidebar.error("⚠️ Strateji ağırlıkları toplamı 100 olmalıdır.")
         else:
             with st.spinner('Matematiksel model çözülüyor...'):
                 model = cp_model.CpModel()
@@ -135,6 +140,7 @@ if uploaded_file:
                 num_t = len(tasks)
                 x = {(i, t): model.NewBoolVar(f'x_{i}_{t}') for i in invs for t in range(num_t)}
                 
+                # Saatlik muafiyeti olan personelleri belirle
                 restricted_staff = set()
                 if un_times:
                     for entry in un_times.split(','):
@@ -142,7 +148,7 @@ if uploaded_file:
                             try: restricted_staff.add(int(entry.split(':')[0].strip()))
                             except: pass
 
-                # Kısıtlar
+                # Temel Kısıtlar
                 for i in invs:
                     for slot in set(t['slot_id'] for t in tasks):
                         ov = [idx for idx, t in enumerate(tasks) if t['slot_id'] == slot]
@@ -154,7 +160,7 @@ if uploaded_file:
                 for t in range(num_t):
                     model.Add(sum(x[i, t] for i in invs) == 1)
 
-                # Muafiyetlerin Zorunlu Uygulanması (Sert Kısıt)
+                # Muafiyet Uygulamaları (Sert Kısıtlar)
                 if un_days:
                     for entry in un_days.split(','):
                         try:
@@ -168,13 +174,17 @@ if uploaded_file:
                         try:
                             parts = entry.split(':', 1)
                             s_no, t_range = int(parts[0]), parts[1].strip()
-                            ex_s, ex_e = to_min(t_range.split('-')[0]), to_min(t_range.split('-')[1])
+                            range_parts = t_range.split('-')
+                            ex_s, ex_e = to_min(range_parts[0]), to_min(range_parts[1])
                             for idx, t in enumerate(tasks):
-                                if s_no in invs and max(t['bas_dk'], ex_s) < min(t['bas_dk'] + t['Süre (Dakika)'], ex_e):
-                                    model.Add(x[s_no, idx] == 0)
+                                if s_no in invs:
+                                    # Sınavın başlama ve bitiş zamanı
+                                    ts, te = t['bas_dk'], t['bas_dk'] + t['Süre (Dakika)']
+                                    if max(ts, ex_s) < min(te, ex_e):
+                                        model.Add(x[s_no, idx] == 0)
                         except: pass
 
-                # İstatistikler
+                # Dağılım İstatistik Değişkenleri
                 total_mins, big_mins, total_exams, morn_cnt, eve_cnt, critical_sum = {}, {}, {}, {}, {}, {}
                 for i in invs:
                     total_mins[i] = model.NewIntVar(0, 10000, f'tm_{i}')
@@ -183,6 +193,7 @@ if uploaded_file:
                     morn_cnt[i] = model.NewIntVar(0, 100, f'mc_{i}')
                     eve_cnt[i] = model.NewIntVar(0, 100, f'ec_{i}')
                     critical_sum[i] = model.NewIntVar(0, 200, f'cs_{i}')
+                    
                     model.Add(total_mins[i] == sum(x[i, t] * tasks[t]['Süre (Dakika)'] for t in range(num_t)))
                     model.Add(big_mins[i] == sum(x[i, t] * tasks[t]['Süre (Dakika)'] for t in range(num_t) if tasks[t]['Sınav Salonu'] in big_rooms))
                     model.Add(total_exams[i] == sum(x[i, t] for t in range(num_t)))
@@ -190,7 +201,7 @@ if uploaded_file:
                     model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Akşam'))
                     model.Add(critical_sum[i] == morn_cnt[i] + eve_cnt[i])
 
-                # Dengeleme
+                # ±2 Sınav Farkı Kısıtı
                 max_e, min_e = model.NewIntVar(0, 100, 'max_e'), model.NewIntVar(0, 100, 'min_e')
                 model.AddMaxEquality(max_e, [total_exams[i] for i in invs])
                 model.AddMinEquality(min_e, [total_exams[i] for i in invs])
@@ -203,6 +214,7 @@ if uploaded_file:
                     model.AddMaxEquality(ma, vals); model.AddMinEquality(mi, vals)
                     d = model.NewIntVar(0, 10000, f'd_{name}'); model.Add(d == ma - mi); return d
 
+                # Dengeleme Skorlaması (Kısıtlı personeller belirli seans dengelerinden hariç tutulur)
                 scoring_invs = [i for i in invs if i not in restricted_staff]
                 model.Minimize(
                     get_diff(total_mins, invs, "t") * weights["total"] * 100 +
@@ -215,38 +227,59 @@ if uploaded_file:
                 solver = cp_model.CpSolver()
                 solver.parameters.max_time_in_seconds = 30.0
                 if solver.Solve(model) in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
+                    # Sonuçları Session State'e kaydet
                     st.session_state.results = []
                     for t_idx, t in enumerate(tasks):
                         for i in invs:
                             if solver.Value(x[i, t_idx]):
                                 row = t.copy(); row['Görevli Personel'] = i
                                 st.session_state.results.append(row)
+                    
                     st.session_state.stats = []
                     for i in invs:
                         st.session_state.stats.append({
                             "Personel": f"{i}{' (Kısıtlı)' if i in restricted_staff else ''}",
-                            "Toplam Süre": solver.Value(total_mins[i]), "Büyük Salon": solver.Value(big_mins[i]),
-                            "Toplam Görev": solver.Value(total_exams[i]), "Sabah Seansı": solver.Value(morn_cnt[i]),
-                            "Akşam Seansı": solver.Value(eve_cnt[i]), "Kritik Toplam": solver.Value(critical_sum[i])
+                            "Toplam Süre (Dk)": solver.Value(total_mins[i]), 
+                            "Büyük Salon Süresi": solver.Value(big_mins[i]),
+                            "Toplam Görev Sayısı": solver.Value(total_exams[i]), 
+                            "Sabah Seansı Sayısı": solver.Value(morn_cnt[i]),
+                            "Akşam Seansı Sayısı": solver.Value(eve_cnt[i]), 
+                            "Kritik Seans Toplamı": solver.Value(critical_sum[i])
                         })
-                    st.success("✅ Optimizasyon tamamlandı.")
-                else: st.error("❌ Uygun çözüm bulunamadı.")
+                    st.success("✅ Optimizasyon işlemi tamamlandı.")
+                else: 
+                    st.error("❌ Belirlenen kriterler dahilinde uygun bir planlama üretilemedi.")
 
-# --- SONUÇLARI GÖSTER ---
+# --- SONUÇLARI GÖRÜNTÜLE ---
 if st.session_state.results:
     df_res = pd.DataFrame(st.session_state.results)
     tab1, tab2, tab3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Dağılım Analizi", "📖 Uygulama Metodolojisi"])
+    
     with tab1:
-        st.dataframe(df_res[['Gün', 'Ders Adı', 'Sınav Saati', 'Sınav Salonu', 'Görevli Personel']], use_container_width=True)
+        view_df = df_res[['Gün', 'Ders Adı', 'Sınav Saati', 'Sınav Salonu', 'Görevli Personel']]
+        st.dataframe(view_df, use_container_width=True)
+        
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-            df_res[['Gün', 'Ders Adı', 'Sınav Saati', 'Sınav Salonu', 'Görevli Personel']].to_excel(writer, index=False)
-        st.download_button("📥 Excel İndir", buffer.getvalue(), "plan.xlsx", key="dl_btn")
-    with tab2: st.table(pd.DataFrame(st.session_state.stats))
+            view_df.to_excel(writer, index=False)
+        st.download_button("📥 Çizelgeyi Excel İndir", buffer.getvalue(), "gozetmen_plani.xlsx")
+    
+    with tab2:
+        st.table(pd.DataFrame(st.session_state.stats))
+    
     with tab3:
         st.subheader("Sistem Çalışma Prensipleri")
-        st.write("Bu yazılım, sınav gözetmenliği süreçlerini operasyonel verimlilik ve standartlaştırılmış dağılım ilkeleri çerçevesinde yönetir.")
-        st.markdown("### Süreç Analizi ve Hafta Tespiti")
-        st.write("Sistem, günlerin kronolojik akışını takip ederek hafta geçişlerini otomatik belirler. Her takvim gününün başlayan ilk sınavı 'Sabah Seansı' olarak tanımlanır. 'Akşam Mesaisi' ise programın süresine göre dinamik olarak ayarlanır.")
+        st.write("Bu yazılım, sınav gözetmenliği planlama sürecini operasyonel verimlilik ve standartlaştırılmış dağılım ilkeleri çerçevesinde yürütür.")
+        st.markdown("### Süreç Analizi ve Dönem Tespiti")
+        st.write("""
+        Sistem, yüklenen takvimi detaylı bir şekilde tarayarak hafta geçişlerini otomatik olarak belirler. 
+        Her takvim gününün başlayan ilk sınavı 'Sabah Seansı' olarak damgalanır. 'Akşam Mesaisi' parametresi ise programın toplam süresine göre dinamik olarak ayarlanır: 
+        Tek haftalık programlarda saat 16:00 ve sonrası ölçüt alınırken; çok haftalık programlarda o günün gerçekleşen en son sınavı akşam seansı olarak kabul edilir.
+        """)
         st.markdown("### Operasyonel Standartlar")
-        st.write("- Zaman çakışmaları tamamen engellenmiştir.\n- Günlük maksimum görev sayısı dört ile sınırlandırılmıştır.\n- Personel arası görev farkı ikiden fazla olamaz.\n- Muafiyetler öncelikli kısıt olarak işlenir.")
+        st.write("""
+        - Bir personel aynı zaman aralığında yalnızca tek bir sınav salonunda görev alabilir.
+        - İş yükü dengesini korumak adına günlük maksimum görev sayısı dört ile sınırlandırılmıştır.
+        - Dağılım dengesini sağlamak amacıyla, en çok görev alan ile en az görev alan personel arasındaki fark ikiden fazla olamaz.
+        - Tanımlanan tüm personel muafiyetleri sisteme öncelikli kısıt olarak işlenir ve bu zaman dilimlerinde atama yapılmaz.
+        """)
