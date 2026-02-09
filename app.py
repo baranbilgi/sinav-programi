@@ -1,4 +1,5 @@
 import streamlit as st
+import pd
 import pandas as pd
 import xml.etree.ElementTree as ET
 from ortools.sat.python import cp_model
@@ -84,11 +85,10 @@ if uploaded_file:
             num_t = len(tasks)
             x = {(i, t): model.NewBoolVar(f'x_{i}_{t}') for i in invs for t in range(num_t)}
 
-            # Akşam Görevlerini Birleştirme İçin Ödül Değişkenleri
             evening_clusters = []
 
             for i in invs:
-                # Sert Kısıtlar: Çakışma, Günlük Limit (4), Dinlenme
+                # Sert Kısıtlar
                 for slot in set(t['slot_id'] for t in tasks):
                     overlap = [idx for idx, t in enumerate(tasks) if t['slot_id'] == slot]
                     model.Add(sum(x[i, idx] for idx in overlap) <= 1)
@@ -97,19 +97,18 @@ if uploaded_file:
                     day_tasks_idx = [idx for idx, t in enumerate(tasks) if t['gun'] == d]
                     model.Add(sum(x[i, idx] for idx in day_tasks_idx) <= 4)
                     
-                    # Akşam Teşviki: Aynı gün, aynı kişinin birden fazla akşam sınavına girmesi
+                    # Akşam Teşviki (Aynı gün akşam mesaisi birleştirme)
                     eve_tasks_in_day = [idx for idx in day_tasks_idx if tasks[idx]['etiket'] == 'aksam']
                     if len(eve_tasks_in_day) > 1:
                         has_multiple_eve = model.NewBoolVar(f'multi_eve_{i}_{d}')
-                        # Eğer bu kişi o gün 2 veya daha fazla akşam sınavına girerse has_multiple_eve = 1 olsun
                         model.Add(sum(x[i, idx] for idx in eve_tasks_in_day) >= 2).OnlyEnforceIf(has_multiple_eve)
                         evening_clusters.append(has_multiple_eve)
 
-            # Sınav başına atama zorunluluğu
+            # Atama zorunluluğu
             for t in range(num_t):
                 model.Add(sum(x[i, t] for i in invs) == 1)
 
-            # Muafiyetler (Günlük ve Saatlik)
+            # Muafiyet İşlemleri
             if unavailable_days_input:
                 for entry in unavailable_days_input.split(','):
                     if ':' in entry:
@@ -154,41 +153,70 @@ if uploaded_file:
                 d = model.NewIntVar(0, 10000, f'd_{name}'); model.Add(d == ma - mi)
                 return d
 
-            # AMAÇ FONKSİYONU + AKŞAM TEŞVİĞİ
-            # Teşvik puanı: Her "birleştirilmiş akşam görevi" için ceza puanından 5000 puan düşüyoruz.
+            # AMAÇ FONKSİYONU
             model.Minimize(
                 get_diff(total_mins, "t") * w_total * 100 +
                 get_diff(big_mins, "b") * w_big * 100 +
                 get_diff(morn_cnt, "m") * w_morn * 1000 + 
                 get_diff(eve_cnt, "e") * w_eve * 1000 +
                 get_diff(critical_sum, "c") * w_sa_total * 1000 -
-                sum(evening_clusters) * 5000  # Akşamları birleştirme teşviki
+                sum(evening_clusters) * 5000 
             )
 
             solver = cp_model.CpSolver()
             solver.parameters.max_time_in_seconds = 30.0
+            
             if solver.Solve(model) in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
-                st.success("✅ Akşam mesai teşvikiyle planlama optimize edildi.")
+                st.success("✅ Optimizasyon işlemi başarıyla tamamlandı ve planlama oluşturuldu.")
+                
                 res = []
                 for t_idx, t in enumerate(tasks):
                     for i in invs:
                         if solver.Value(x[i, t_idx]):
                             row = t.copy(); row['Gözetmen'] = i; res.append(row)
                 df_res = pd.DataFrame(res)
-                t1, t2, t3 = st.tabs(["📋 Çizelge", "📊 Analiz", "📖 Metodoloji"])
+                
+                t1, t2, t3 = st.tabs(["📋 Çizelge", "📊 Analiz", "🧠 Metodoloji"])
+                
                 with t1:
-                    st.download_button("📥 Excel İndir", io.BytesIO().getvalue(), "gorev_plani.xlsx")
                     st.dataframe(df_res[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']], use_container_width=True)
+                
                 with t2:
                     stats = []
                     for i in invs:
-                        stats.append({"Gözetmen": i, "Toplam Mesai (dk)": solver.Value(total_mins[i]), "Büyük Sınıf (dk)": solver.Value(big_mins[i]), "Sabah": solver.Value(morn_cnt[i]), "Akşam": solver.Value(eve_cnt[i]), "Kritik Toplam": solver.Value(critical_sum[i])})
+                        stats.append({
+                            "Gözetmen": i, 
+                            "Toplam Mesai (dk)": solver.Value(total_mins[i]), 
+                            "Büyük Sınıf (dk)": solver.Value(big_mins[i]), 
+                            "Sabah": solver.Value(morn_cnt[i]), 
+                            "Akşam": solver.Value(eve_cnt[i]), 
+                            "Kritik Toplam": solver.Value(critical_sum[i])
+                        })
                     st.table(pd.DataFrame(stats))
+                
                 with t3:
-                    st.info("### 🧠 Sistem Çalışma Metodolojisi")
-                    st.markdown("""
-                    **Google OR-Tools (Constraint Programming)** kullanılarak hazırlanan bu modelde şunlar önceliklidir:
-                    - **Akşam Kümelenmesi:** Bir gözetmen akşam sınavına kalmışsa, zamanı verimli kullanmak adına çakışmayan ikinci bir akşam sınavı için önceliklendirilir.
-                    - **Sert Kısıtlar:** Dinlenme süreleri ve çakışma kontrolleri asla ihlal edilmez.
+                    st.markdown("### 🧠 Gelişmiş Optimizasyon Metodolojisi")
+                    st.write("""
+                    Bu sistem, karmaşık zamanlama problemlerini çözmek için geliştirilen **Google OR-Tools** kütüphanesinin 
+                    **CP-SAT (Constraint Programming - Satisfiability)** çözücüsünü kullanmaktadır. 
                     """)
-            else: st.error("Çözüm bulunamadı!")
+                    
+                    st.info("#### ⚙️ Kullanılan Algoritmik Mantık")
+                    st.markdown("""
+                    **1. Kısıt Programlama (Constraint Programming):** Geleneksel algoritmaların aksine, CP-SAT 'nelerin olamayacağına' odaklanır. 
+                    - *Sert Kısıtlar:* Bir gözetmenin aynı anda iki farklı sınavda olması veya günlük görev limitini aşması matematiksel olarak engellenir.
+                    - *Yumuşak Kısıtlar:* Ağırlıklı puanlama ile ideal senaryoya yaklaşılır.
+
+                    **2. SAT-Based Search & Lazy Clause Generation:** Model, problemleri Boolean (0-1) mantığına indirger. Bu yöntem, devasa olasılık uzaylarını (trilyonlarca kombinasyon) saniyeler içinde tarayarak çakışmasız en iyi sonucu bulur.
+
+                    **3. Min-Max Normalizasyonu (Adalet Mekanizması):** Sistem, en yoğun çalışan gözetmen ile en az çalışan arasındaki farkı minimize etmeye odaklanır.
+                    """)
+                    
+                    st.latex(r"Minimize: \sum_{i \in Criteria} (Weight_i \times (Max_i - Min_i)) - Reward_{cluster}")
+                    
+                    st.markdown("""
+                    **4. Kümelenme Stratejisi (Evening Clustering):** Personel verimliliğini artırmak adına, eğer bir gözetmen akşam sınavına atanmışsa, sistem o kişiyi kampüsten erken göndermek veya gelişi-gidişi optimize etmek için uygun diğer akşam sınavlarına öncelikli olarak yerleştirir.
+                    """)
+
+            else: 
+                st.error("❌ Belirtilen kısıtlar altında uygun bir çözüm bulunamadı! Lütfen personel sayısını artırmayı veya muafiyetleri azaltmayı deneyin.")
