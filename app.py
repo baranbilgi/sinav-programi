@@ -6,11 +6,8 @@ import io
 
 # Sayfa Yapılandırması
 st.set_page_config(page_title="Gözetmen Planlama Sistemi", layout="wide")
-
-# Kurumsal Başlık
 st.title("🏛️ Gözetmen Optimizasyon ve Görev Planlama Sistemi")
 
-# --- FONKSİYONLAR ---
 def parse_xml(xml_content):
     tree = ET.ElementTree(ET.fromstring(xml_content))
     root = tree.getroot()
@@ -27,27 +24,23 @@ def parse_xml(xml_content):
             for s in sinif_listesi:
                 all_rooms.add(s)
                 tasks.append({
-                    'gun': gun_adi, 
-                    'sinav': sinav.get('ad'), 
+                    'gun': gun_adi, 'sinav': sinav.get('ad'), 
                     'saat': f"{sinav.get('baslangic')}-{sinav.get('bitis')}",
-                    'baslangic': sinav.get('baslangic'), 
-                    'sinif': s,
-                    'sure': int(sinav.get('sure')), 
-                    'etiket': sinav.get('etiket', 'normal'),
+                    'baslangic': sinav.get('baslangic'), 'sinif': s,
+                    'sure': int(sinav.get('sure')), 'etiket': sinav.get('etiket', 'normal'),
                     'slot_id': f"{gun_adi}_{sinav.get('baslangic')}"
                 })
     return tasks, sorted(list(all_rooms)), days_order
 
-# --- YAN MENÜ ---
 st.sidebar.header("⚙️ Operasyonel Ayarlar")
 uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (XML)", type=["xml"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
 
 if uploaded_file:
     tasks, rooms, days_list = parse_xml(uploaded_file.read().decode("utf-8"))
-    big_rooms = st.sidebar.multiselect("Büyük Sınıf Kategorisindeki Odalar", rooms, default=[r for r in rooms if r in ['301', '309']])
+    big_rooms = st.sidebar.multiselect("Büyük Sınıf Odaları", rooms, default=[r for r in rooms if r in ['301', '309']])
     st.sidebar.subheader("🚫 Görev Muafiyetleri")
-    unavailable_input = st.sidebar.text_area("İzinli Personel (Örn: Gözetmen 1:Pazartesi)")
+    unavailable_input = st.sidebar.text_area("İzinli Personel (Gözetmen No:Gün)")
 
     if st.sidebar.button("Planlamayı Optimize Et"):
         model = cp_model.CpModel()
@@ -63,7 +56,7 @@ if uploaded_file:
                 overlap = [idx for idx, t in enumerate(tasks) if t['slot_id'] == slot]
                 model.Add(sum(x[i, idx] for idx in overlap) <= 1)
             
-            # Günlük Max 3 Görev ve Dinlenme Kuralı
+            # Günlük Limit ve Gece-Sabah Yasağı
             for d_idx, d in enumerate(days_list):
                 day_tasks = [idx for idx, t in enumerate(tasks) if t['gun'] == d]
                 model.Add(sum(x[i, idx] for idx in day_tasks) <= 3)
@@ -74,42 +67,31 @@ if uploaded_file:
                         for tf in tomorrow_first:
                             model.Add(x[i, tl] + x[i, tf] <= 1)
 
-        # Muafiyet Girişi
-        if unavailable_input:
-            for entry in unavailable_input.split(','):
-                if ':' in entry:
-                    try:
-                        s_part, d_part = entry.split(':')
-                        s_no = int(s_part.strip().replace("Gözetmen ", ""))
-                        if s_no in invs:
-                            for idx, t in enumerate(tasks):
-                                if t['gun'] == d_part.strip(): model.Add(x[s_no, idx] == 0)
-                    except: continue
-
         # Adalet Değişkenleri
-        total_mins, morn_cnt, eve_cnt, big_mins = {}, {}, {}, {}
+        total_mins, morn_cnt, eve_cnt, critical_sum = {}, {}, {}, {}
         for i in invs:
             total_mins[i] = model.NewIntVar(0, 10000, f'tm_{i}')
-            big_mins[i] = model.NewIntVar(0, 10000, f'bm_{i}')
             morn_cnt[i] = model.NewIntVar(0, 50, f'mc_{i}')
             eve_cnt[i] = model.NewIntVar(0, 50, f'ec_{i}')
+            critical_sum[i] = model.NewIntVar(0, 50, f'cs_{i}')
 
             model.Add(total_mins[i] == sum(x[i, t] * tasks[t]['sure'] for t in range(num_t)))
-            model.Add(big_mins[i] == sum(x[i, t] * tasks[t]['sure'] for t in range(num_t) if tasks[t]['sinif'] in big_rooms))
             model.Add(morn_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['etiket'] == 'sabah'))
             model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['etiket'] == 'aksam'))
+            model.Add(critical_sum[i] == morn_cnt[i] + eve_cnt[i])
 
-        # --- YENİ ADALET KISITLARI (KESİN EŞİTLİK) ---
-        def add_fair_diff(model, vars, max_diff=1):
-            ma, mi = model.NewIntVar(0, 100, 'max'), model.NewIntVar(0, 100, 'min')
-            model.AddMaxEquality(ma, list(vars.values()))
-            model.AddMinEquality(mi, list(vars.values()))
+        # --- ZORUNLU ADALET KISITLARI ---
+        def add_strict_fairness(model, var_dict, max_diff=1):
+            ma, mi = model.NewIntVar(0, 100, 'ma'), model.NewIntVar(0, 100, 'mi')
+            model.AddMaxEquality(ma, list(var_dict.values()))
+            model.AddMinEquality(mi, list(var_dict.values()))
             model.Add(ma - mi <= max_diff)
 
-        add_fair_diff(model, morn_cnt) # Sabahlar arası fark max 1
-        add_fair_diff(model, eve_cnt)  # Akşamlar arası fark max 1
+        add_strict_fairness(model, critical_sum) # S+A Toplamı kesin dengeli
+        add_strict_fairness(model, morn_cnt)      # Sabahlar kendi içinde dengeli
+        add_strict_fairness(model, eve_cnt)       # Akşamlar kendi içinde dengeli
 
-        # Optimizasyon: Toplam Süre Farkını Minimize Et
+        # Optimizasyon: Mesai Süresi Farkını Minimize Et
         ma_t, mi_t = model.NewIntVar(0, 10000, 'ma_t'), model.NewIntVar(0, 10000, 'mi_t')
         model.AddMaxEquality(ma_t, list(total_mins.values()))
         model.AddMinEquality(mi_t, list(total_mins.values()))
@@ -117,7 +99,7 @@ if uploaded_file:
 
         solver = cp_model.CpSolver()
         if solver.Solve(model) in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
-            st.success("✅ Operasyonel planlama başarıyla optimize edildi.")
+            st.success("✅ Planlama kesin adalet kriterlerine göre optimize edildi.")
             res = []
             for t_idx, t in enumerate(tasks):
                 for i in invs:
@@ -125,23 +107,26 @@ if uploaded_file:
                         row = t.copy()
                         row['Gözetmen'] = f"Gözetmen {i}"
                         res.append(row)
-            
             df_final = pd.DataFrame(res)
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_final[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']].to_excel(writer, index=False)
             
-            t1, t2, t3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Analizi", "📖 Metodoloji"])
-            with t1:
-                st.download_button("📥 Excel Olarak İndir", output.getvalue(), "gorev_plani.xlsx")
+            tab1, tab2, tab3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Analizi", "📖 Metodoloji"])
+            with tab1:
                 st.dataframe(df_final[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']], use_container_width=True)
-            with t2:
-                stats = [{"Gözetmen": f"Gözetmen {i}", "Toplam Mesai (dk)": solver.Value(total_mins[i]), "Büyük Sınıf Mesaisi (dk)": solver.Value(big_mins[i]), "Sabah Görevi": solver.Value(morn_cnt[i]), "Akşam Görevi": solver.Value(eve_cnt[i])} for i in invs]
+            with tab2:
+                stats = []
+                for i in invs:
+                    stats.append({
+                        "Gözetmen": f"Gözetmen {i}",
+                        "Toplam Mesai (dk)": solver.Value(total_mins[i]),
+                        "Büyük Sınıf Mesaisi (dk)": sum(tasks[t]['sure'] for t in range(num_t) if solver.Value(x[i, t]) and tasks[t]['sinif'] in big_rooms),
+                        "Sabah Görevi": solver.Value(morn_cnt[i]),
+                        "Akşam Görevi": solver.Value(eve_cnt[i]),
+                        "Kritik Toplam (S+A)": solver.Value(critical_sum[i])
+                    })
                 st.table(pd.DataFrame(stats))
-            with t3:
-                st.write("**Planlama İlkeleri:**")
-                st.write("1. **Mesai Dengesi:** Toplam süreler homojenize edilir.")
-                st.write("2. **Saat Hassasiyeti:** Sabah ve akşam görevleri kendi içlerinde dengelenir (max 1 sınav fark).")
-                st.write("3. **Dinlenme Süresi:** Akşam görevini takiben sabah görevi atanmaz.")
+            with tab3:
+                st.write("**Uygulanan Kesin Kurallar:**")
+                st.write("- Gözetmenler arası S+A toplam farkı **maksimum 1** sınavdır.")
+                st.write("- Sabah ve akşam dağılımları kendi içlerinde de **maksimum 1** farkla sınırlandırılmıştır.")
         else:
-            st.error("Kısıtlar altında uygun plan bulunamadı. Lütfen gözetmen sayısını artırın.")
+            st.error("Kısıtlar çok dar olduğu için uygun plan bulunamadı. Lütfen gözetmen sayısını gözden geçirin.")
