@@ -23,17 +23,14 @@ def parse_excel(file):
     df = pd.read_excel(file)
     df.columns = [c.strip().upper() for c in df.columns]
     
-    tasks = []
-    all_rooms = set()
+    raw_tasks = []
     days_order = []
     
     for _, row in df.iterrows():
-        if pd.isna(row.get('GÜN')) or pd.isna(row.get('SAAT')):
-            continue
+        if pd.isna(row.get('GÜN')) or pd.isna(row.get('SAAT')): continue
             
         gun_adi = str(row['GÜN']).strip()
-        if gun_adi not in days_order: 
-            days_order.append(gun_adi)
+        if gun_adi not in days_order: days_order.append(gun_adi)
             
         ders_adi = str(row.get('DERSLER', 'Bilinmeyen Ders'))
         saat_araligi = str(row['SAAT'])
@@ -44,30 +41,36 @@ def parse_excel(file):
             bas_dakika = to_min(bas_str)
             bit_dakika = to_min(bit_str)
             sure = bit_dakika - bas_dakika
-        except:
-            continue
-
-        etiket = 'Normal'
-        if bas_dakika is not None:
-            if bas_dakika >= 960:
-                etiket = 'Akşam'
-            elif bas_dakika <= 600:
-                etiket = 'Sabah'
+        except: continue
 
         sinif_listesi = [s.strip() for s in sinav_yerleri.replace(',', '-').split('-') if s.strip()]
         
         for s in sinif_listesi:
-            all_rooms.add(s)
-            tasks.append({
-                'Gün': gun_adi, 
-                'Ders Adı': ders_adi, 
-                'Sınav Saati': saat_araligi,
-                'bas_dk': bas_dakika,
-                'Sınav Salonu': s, 
-                'Süre (Dakika)': sure, 
-                'Mesai Türü': etiket, 
-                'slot_id': f"{gun_adi}_{bas_str.strip()}"
+            raw_tasks.append({
+                'Gün': gun_adi, 'Ders Adı': ders_adi, 'Sınav Saati': saat_araligi,
+                'bas_dk': bas_dakika, 'Sınav Salonu': s, 'Süre (Dakika)': sure,
+                'bas_str': bas_str.strip()
             })
+
+    # Dinamik Sabah/Akşam Etiketleme
+    tasks = []
+    all_rooms = set()
+    for d in days_order:
+        day_tasks = [t for t in raw_tasks if t['Gün'] == d]
+        if not day_tasks: continue
+        
+        min_start = min(t['bas_dk'] for t in day_tasks) # Günün ilk sınav saati
+        
+        for t in day_tasks:
+            # Etiketleme Mantığı
+            label = 'Normal'
+            if t['bas_dk'] == min_start: label = 'Sabah'
+            elif t['bas_dk'] >= 960: label = 'Akşam' # 16:00 kuralı devam ediyor
+            
+            t['Mesai Türü'] = label
+            t['slot_id'] = f"{t['Gün']}_{t['bas_str']}"
+            all_rooms.add(t['Sınav Salonu'])
+            tasks.append(t)
             
     return tasks, sorted(list(all_rooms)), days_order
 
@@ -79,7 +82,7 @@ staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, v
 st.sidebar.divider()
 st.sidebar.subheader("🚫 Görev Muafiyet Tanımları")
 unavailable_days_input = st.sidebar.text_area("Günlük Muafiyet (PersonelNo:Gün)", placeholder="Örn: 1:Pazartesi")
-unavailable_times_input = st.sidebar.text_area("Saatlik Muafiyet (PersonelNo:Saat)", placeholder="Örn: 1:08:00-12:00")
+unavailable_times_input = st.sidebar.text_area("Saatlik Muafiyet (PersonelNo:Saat)", placeholder="Örn: 1:16:00-21:00")
 
 st.sidebar.divider()
 st.sidebar.header("🎯 Dağılım Stratejileri (Toplam: 100)")
@@ -103,8 +106,16 @@ if uploaded_file:
                 invs = list(range(1, staff_count + 1))
                 num_t = len(tasks)
                 x = {(i, t): model.NewBoolVar(f'x_{i}_{t}') for i in invs for t in range(num_t)}
-                evening_clusters = []
+                
+                # Saatlik muafiyeti olan personelleri belirle
+                restricted_staff = set()
+                if unavailable_times_input:
+                    for entry in unavailable_times_input.split(','):
+                        if ':' in entry:
+                            try: restricted_staff.add(int(entry.split(':')[0].strip()))
+                            except: pass
 
+                evening_clusters = []
                 for i in invs:
                     for slot in set(t['slot_id'] for t in tasks):
                         overlap = [idx for idx, t in enumerate(tasks) if t['slot_id'] == slot]
@@ -123,14 +134,15 @@ if uploaded_file:
                 for t in range(num_t):
                     model.Add(sum(x[i, t] for i in invs) == 1)
 
+                # Muafiyet Kısıtları (Hard Constraints)
                 if unavailable_days_input:
                     for entry in unavailable_days_input.split(','):
                         try:
                             s_no, d_name = entry.split(':')
-                            s_no = int(s_no.strip())
+                            s_no = int(s_no.strip()); d_name = d_name.strip().lower()
                             if s_no in invs:
                                 for idx, t in enumerate(tasks):
-                                    if t['Gün'].strip().lower() == d_name.strip().lower(): model.Add(x[s_no, idx] == 0)
+                                    if t['Gün'].strip().lower() == d_name: model.Add(x[s_no, idx] == 0)
                         except: continue
 
                 if unavailable_times_input:
@@ -140,12 +152,14 @@ if uploaded_file:
                             s_no, t_range = int(parts[0]), parts[1].strip()
                             st_str, en_str = t_range.split('-')
                             ex_s, ex_e = to_min(st_str), to_min(en_str)
-                            for idx, t in enumerate(tasks):
-                                ts, te = t['bas_dk'], t['bas_dk'] + t['Süre (Dakika)']
-                                if max(ts, ex_s) < min(te, ex_e): model.Add(x[s_no, idx] == 0)
+                            if s_no in invs:
+                                for idx, t in enumerate(tasks):
+                                    ts, te = t['bas_dk'], t['bas_dk'] + t['Süre (Dakika)']
+                                    if max(ts, ex_s) < min(te, ex_e): model.Add(x[s_no, idx] == 0)
                         except: continue
 
-                total_mins, big_mins, morn_cnt, eve_cnt, critical_sum, total_exams = {}, {}, {}, {}, {}, {}
+                # İstatistik Değişkenleri
+                total_mins, big_mins, total_exams, morn_cnt, eve_cnt, critical_sum = {}, {}, {}, {}, {}, {}
                 for i in invs:
                     total_mins[i] = model.NewIntVar(0, 10000, f'tm_{i}')
                     big_mins[i] = model.NewIntVar(0, 10000, f'bm_{i}')
@@ -161,58 +175,61 @@ if uploaded_file:
                     model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Akşam'))
                     model.Add(critical_sum[i] == morn_cnt[i] + eve_cnt[i])
 
-                def get_diff(v_dict, name):
+                # SERT ADALET KISITI: Max Sınav - Min Sınav <= 2
+                max_e, min_e = model.NewIntVar(0, 100, 'max_e'), model.NewIntVar(0, 100, 'min_e')
+                model.AddMaxEquality(max_e, [total_exams[i] for i in invs])
+                model.AddMinEquality(min_e, [total_exams[i] for i in invs])
+                model.Add(max_e - min_e <= 2)
+
+                # Dinamik Dengeleme Fonksiyonu
+                def get_diff(v_dict, filtered_invs, name):
+                    if not filtered_invs: return 0
+                    subset = [v_dict[i] for i in filtered_invs]
                     ma, mi = model.NewIntVar(0, 10000, f'ma_{name}'), model.NewIntVar(0, 10000, f'mi_{name}')
-                    model.AddMaxEquality(ma, list(v_dict.values()))
-                    model.AddMinEquality(mi, list(v_dict.values()))
+                    model.AddMaxEquality(ma, subset); model.AddMinEquality(mi, subset)
                     d = model.NewIntVar(0, 10000, f'd_{name}'); model.Add(d == ma - mi)
                     return d
 
+                # Puanlamaya dahil edilecek personeller (Kısıtlılar hariç)
+                scoring_invs = [i for i in invs if i not in restricted_staff]
+
                 model.Minimize(
-                    get_diff(total_mins, "t") * w_total * 100 +
-                    get_diff(big_mins, "b") * w_big * 100 +
-                    get_diff(morn_cnt, "m") * w_morn * 1000 + 
-                    get_diff(eve_cnt, "e") * w_eve * 1000 +
-                    get_diff(critical_sum, "c") * w_sa_total * 1000 -
+                    get_diff(total_mins, invs, "t") * w_total * 100 +
+                    get_diff(big_mins, invs, "b") * w_big * 100 +
+                    get_diff(morn_cnt, scoring_invs, "m") * w_morn * 1000 + 
+                    get_diff(eve_cnt, scoring_invs, "e") * w_eve * 1000 +
+                    get_diff(critical_sum, scoring_invs, "c") * w_sa_total * 1000 -
                     sum(evening_clusters) * 5000 
                 )
 
                 solver = cp_model.CpSolver()
                 solver.parameters.max_time_in_seconds = 30.0
-                
                 if solver.Solve(model) in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
                     st.success("✅ Kurumsal görev planlaması başarıyla oluşturulmuştur.")
-                    
                     res = []
                     for t_idx, t in enumerate(tasks):
                         for i in invs:
                             if solver.Value(x[i, t_idx]):
-                                row = t.copy()
-                                row['Görevli Personel'] = i
-                                res.append(row)
+                                row = t.copy(); row['Görevli Personel'] = i; res.append(row)
                     
                     df_res = pd.DataFrame(res)
                     tab1, tab2, tab3 = st.tabs(["📋 Görev Çizelgesi", "📊 Görev Dağılım İstatistikleri", "📖 Uygulama Metodolojisi"])
-                    
                     with tab1:
                         final_df = df_res[['Gün', 'Ders Adı', 'Sınav Saati', 'Sınav Salonu', 'Görevli Personel']]
                         st.dataframe(final_df, use_container_width=True)
-                        
                         buffer = io.BytesIO()
                         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                             final_df.to_excel(writer, index=False, sheet_name='Gorev_Plani')
-                        st.download_button("📥 Çizelgeyi Excel Formatında İndir", buffer.getvalue(), "kurumsal_gozetmen_plani.xlsx")
+                        st.download_button("📥 Çizelgeyi Excel İndir", buffer.getvalue(), "kurumsal_gozetmen_plani.xlsx")
                     
                     with tab2:
                         stats = []
                         for i in invs:
+                            tag = " (Muaf)" if i in restricted_staff else ""
                             stats.append({
-                                "Personel": i, 
-                                "Top. Mesai (Dk)": solver.Value(total_mins[i]), 
-                                "Büyük Salon (Dk)": solver.Value(big_mins[i]), 
-                                "Toplam Sınav Sayısı": solver.Value(total_exams[i]),
-                                "Sabah Seansı": solver.Value(morn_cnt[i]), 
-                                "Akşam Seansı": solver.Value(eve_cnt[i]), 
+                                "Personel": f"{i}{tag}", "Top. Mesai (Dk)": solver.Value(total_mins[i]), 
+                                "Büyük Salon (Dk)": solver.Value(big_mins[i]), "Toplam Sınav Sayısı": solver.Value(total_exams[i]),
+                                "Sabah Seansı": solver.Value(morn_cnt[i]), "Akşam Seansı": solver.Value(eve_cnt[i]), 
                                 "Kritik Seans Toplamı": solver.Value(critical_sum[i])
                             })
                         st.table(pd.DataFrame(stats))
@@ -220,32 +237,22 @@ if uploaded_file:
                     with tab3:
                         st.subheader("Sistem Nasıl Çalışır?")
                         st.markdown("""
-                        Bu yazılım, personel görevlendirme sürecini insan hatasından arındırarak tamamen matematiksel verilerle çözer. İşte sistemin çalışma adımları:
+                        Bu yazılım, personel görevlendirme sürecini bilimsel yöntemlerle çözer. İşte temel çalışma adımları:
 
-                        ### 1. Veri Analizi ve Sınıflandırma
-                        Excel dosyanızı yüklediğinizde sistem her sınavı tek tek inceler. Özellikle saat **16:00 ve sonrası** başlayan sınavları otomatik olarak **"Akşam Mesaisi"** olarak etiketler. Eğer bir sınavda birden fazla salon (Örn: 301-303) varsa, her salon için ayrı bir görev oluşturur.
+                        ### 1. Dinamik Seans Sınıflandırması
+                        Sistem, Excel dosyasındaki sınav saatlerini her gün için ayrı ayrı analiz eder. Her takvim gününün **başlangıç saati en erkene denk gelen sınavı** otomatik olarak **"Sabah Seansı"** olarak tanımlanır. Saat 16:00 ve sonrası ise "Akşam Mesaisi" olarak etiketlenir.
 
-                        ### 2. Kurallar ve Yasaklar
-                        Algoritma, planı hazırlarken şu sert kısıtları uygular:
-                        * **Aynı Anda Tek Görev:** Bir personel aynı saatte iki farklı salonda görevlendirilemez. Sistem çakışmaları %100 engeller.
-                        * **Günlük Limit:** Personel verimliliğini korumak adına, hiçbir personele bir takvim gününde 4'ten fazla görev atanmaz.
-                        * **Özel İstekler ve Muafiyetler:** Yan menüden girdiğiniz izinli günler veya kısıtlı saatler sistem tarafından öncelikli olarak işlenir; muaf personele o sürelerde görev yazılmaz.
+                        ### 2. Sert Kurallar (Asla Esnetilmez)
+                        * **Çakışma Engeli:** Bir personel aynı saat diliminde iki farklı görev alamaz.
+                        * **±2 Sınav Adalet Kuralı:** En çok sınav görevine sahip personel ile en az görev alan personel arasındaki fark **asla 2'yi geçemez.** (Örn: En az alan 8 sınav görevindeyse, en çok alan max 10 görev alabilir).
+                        * **Muafiyet Kontrolü:** Günlük veya saatlik girilen tüm personel kısıtları sisteme sert kural olarak işlenir.
 
-                        ### 3. Akıllı Verimlilik
-                        Sistem, personelin kampüste geçirdiği zamanı verimli kullanmaya çalışır. Eğer bir personel o gün akşam sınavına (16:00 sonrası) atanmışsa, algoritma o personeli **ikinci bir akşam sınavına** atamak için önceliklendirir. Böylece, bir kişi o akşam kampüsteyken iki işi birden tamamlar, diğer personelin ise akşam mesaisine kalmasına gerek kalmaz.
+                        ### 3. Akıllı Dengeleme ve Muafiyet Yönetimi
+                        Sistem tüm personeli eşit iş yüküne ulaştırmaya çalışırken, **saatlik muafiyeti olan (örn: sadece gündüz çalışan) personelleri sabah/akşam dengesi hesaplamasından hariç tutar.** Böylece kısıtlı bir personelin mecburen düşük olan akşam mesai sayısı, genel "Adalet Skoru"nu bozmaz; diğer personel kendi içinde dengelenmeye devam eder.
 
-                        ### 4. Matematiksel Dengeleme
-                        Sistem sadece atama yapmaz, aynı zamanda tüm personellerin yükünü en adil şekilde dağıtır. Algoritma saniyeler içinde binlerce farklı senaryoyu dener ve belirlenen kriterler arasındaki farkı minimize eder. Süreç şu temel formül üzerinden yönetilir:
+                        ### 4. Matematiksel Optimizasyon
+                        Sistem milyonlarca olası kombinasyonu aşağıdaki amaç fonksiyonu üzerinden değerlendirerek en verimli olanı seçer:
                         """)
-                        
                         st.latex(r"Minimize: \sum_{i \in Criteria} (Weight_i \times (Max_i - Min_i)) - Reward_{cluster}")
-                        
-                        st.markdown("""
-                        Bu formül sayesinde:
-                        - Personellerin toplam çalıştığı dakika süresi,
-                        - Toplam girilen sınav sayısı,
-                        - Sabah erken gelme sıklığı,
-                        - Zorlu veya büyük salonlardaki görev dağılımı birbirine en yakın seviyeye çekilir.
-                        """)
                 else:
-                    st.error("❌ Mevcut kısıtlar altında uygun bir senaryo üretilemedi. Personel sayısını artırmayı veya muafiyetleri azaltmayı deneyiniz.")
+                    st.error("❌ Mevcut kısıtlar altında uygun bir senaryo üretilemedi. Personel sayısını artırmayı veya ±2 kuralını karşılamak için muafiyetleri azaltmayı deneyiniz.")
