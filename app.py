@@ -150,4 +150,31 @@ if uploaded_file:
                         report.append({
                             "Gözetmen": f"Gözetmen {i}",
                             "Toplam Mesai (dk)": solver.Value(total_mins[i]),
-                            "Büyük Sınıf Mesaisi (dk
+                            "Büyük Sınıf Mesaisi (dk)": solver.Value(big_mins[i]),
+                            "Sabah Görevi": solver.Value(morn_cnt[i]),
+                            "Akşam Görevi": solver.Value(eve_cnt[i]),
+                            "Kritik Toplam (S+A)": solver.Value(critical_sum[i])
+                        })
+                    st.table(pd.DataFrame(report))
+
+                with t3:
+                    st.info("### 🧠 Sistem Çalışma Metodolojisi")
+                    st.markdown(f"""
+                    **1. Matematiksel Motor:**
+                    Sistem, **Google OR-Tools** kütüphanesini temel alan bir *Constraint Programming (Kısıtlı Programlama)* modelidir. Verilen tüm kriterleri aynı anda değerlendirerek milyonlarca olası kombinasyon arasından en düşük 'ceza puanına' sahip olanı seçer.
+
+                    **2. Öncelik Hiyerarşisi (Ağırlıklı Optimizasyon):**
+                    Belirlediğiniz strateji ağırlıkları ({w_total}% Süre, {w_big}% Büyük Sınıf, vb.) modelin amaç fonksiyonuna katsayı olarak eklenir. Ağırlığı yüksek olan kriterdeki eşitsizlikler, çözüm puanını daha fazla etkilediği için sistem öncelikle o dengesizliği gidermeye çalışır.
+
+                    **3. Sert Kısıtlar (Asla Esnetilemez):**
+                    - **Çakışma Önleme:** Hiçbir personel aynı zaman diliminde iki farklı sınavda görevlendirilemez.
+                    - **Dinlenme Kuralı:** Gece geç saatte (17:00 sonrası) sınavdan çıkan bir personel, ertesi sabah erken (10:00 öncesi) bir sınava verilemez.
+                    - **Yorgunluk Yönetimi:** Bir personele bir gün içerisinde en fazla **4** görev atanabilir.
+
+                    **4. Otomatik Veri İşleme:**
+                    XML dosyasında açıkça `etiket="sabah"` veya `etiket="aksam"` belirtilmemiş olsa dahi, sistem sınavın başlangıç saatine göre (Sabah <= 10:00, Akşam >= 17:00) otomatik sınıflandırma yapar.
+                    """)
+            else:
+                st.error("Mevcut kısıtlar ve gözetmen sayısı ile uygun bir plan bulunamadı. Lütfen personel sayısını artırın.")
+else:
+    st.info("Devam etmek için lütfen sol menüden sınav takviminizi (XML) yükleyiniz.")
