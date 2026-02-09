@@ -8,6 +8,15 @@ import io
 st.set_page_config(page_title="Gözetmen Planlama Sistemi", layout="wide")
 st.title("🏛️ Gözetmen Optimizasyon ve Görev Planlama Sistemi")
 
+# --- YARDIMCI FONKSİYONLAR ---
+def to_min(time_str):
+    """'HH:MM' veya 'HH.MM' formatındaki saati gün başlangıcından itibaren dakikaya çevirir."""
+    try:
+        h, m = map(int, time_str.replace('.', ':').split(':'))
+        return h * 60 + m
+    except:
+        return 0
+
 def parse_xml(xml_content):
     tree = ET.ElementTree(ET.fromstring(xml_content))
     root = tree.getroot()
@@ -37,10 +46,21 @@ st.sidebar.header("⚙️ Operasyonel Ayarlar")
 uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (XML)", type=["xml"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
 
-# Müsaitlik Durumu Girişi
+# --- MUAFİYET PANELİ ---
 st.sidebar.divider()
 st.sidebar.subheader("🚫 Görev Muafiyetleri")
-unavailable_input = st.sidebar.text_area("İzinli Personel (Örn: 1:Pazartesi, 2:Sali)", help="Format: GözetmenNo:GünAdı")
+
+unavailable_days_input = st.sidebar.text_area(
+    "1. Gün Bazlı Muafiyet", 
+    placeholder="Örn: 1:Pazartesi, 2:Sali",
+    help="Belirtilen gözetmeni o günün tamamından muaf tutar."
+)
+
+unavailable_times_input = st.sidebar.text_area(
+    "2. Saat Aralığı Muafiyeti (Tüm Hafta)", 
+    placeholder="Örn: 1:16:00-20:00",
+    help="Format: GözetmenNo:Başlangıç-Bitiş. Belirtilen saat aralığına denk gelen sınavlara atama yapılmaz."
+)
 
 st.sidebar.divider()
 st.sidebar.header("🎯 Strateji Ağırlıkları (Toplam: 100)")
@@ -86,17 +106,37 @@ if uploaded_file:
                             for tf in tomorrow_first:
                                 model.Add(x[i, tl] + x[i, tf] <= 1)
 
-            # --- MÜSAİTLİK KISITI (Özel Muafiyetler) ---
-            if unavailable_input:
-                for entry in unavailable_input.split(','):
+            # --- GÜN BAZLI MUAFİYET ---
+            if unavailable_days_input:
+                for entry in unavailable_days_input.split(','):
                     if ':' in entry:
                         try:
-                            s_no_str, day_name = entry.split(':')
+                            s_no_str, d_name = entry.split(':')
                             s_no = int(s_no_str.strip())
-                            d_name = day_name.strip()
                             if s_no in invs:
                                 for idx, t in enumerate(tasks):
-                                    if t['gun'] == d_name:
+                                    if t['gun'] == d_name.strip():
+                                        model.Add(x[s_no, idx] == 0)
+                        except: continue
+
+            # --- SAAT ARALIĞI MUAFİYETİ ---
+            if unavailable_times_input:
+                for entry in unavailable_times_input.split(','):
+                    if ':' in entry:
+                        try:
+                            s_no_str, time_range_str = entry.split(':')
+                            s_no = int(s_no_str.strip())
+                            if '-' in time_range_str and s_no in invs:
+                                t_start_str, t_end_str = time_range_str.split('-')
+                                exempt_start = to_min(t_start_str.strip())
+                                exempt_end = to_min(t_end_str.strip())
+                                
+                                for idx, t in enumerate(tasks):
+                                    task_start = to_min(t['baslangic'])
+                                    task_end = task_start + t['sure']
+                                    
+                                    # Kesişim kontrolü: max(baslangiclar) < min(bitisler)
+                                    if max(task_start, exempt_start) < min(task_end, exempt_end):
                                         model.Add(x[s_no, idx] == 0)
                         except: continue
 
@@ -177,18 +217,19 @@ if uploaded_file:
 
                     #### ⚖️ Optimizasyon Hiyerarşisi
                     Sistem, aşağıdaki kriterler arasındaki farkı (eşitsizliği) minimize etmeye odaklanır:
-                    - **Mesai Dengesi:** Personel arasındaki toplam sınav sürelerinin homojenize edilmesi.
-                    - **Salon Rotasyonu:** Büyük kapasiteli salonlardaki gözetmenlik yükünün eşit dağıtılması.
+                    - **Mesai Dengesi:** Toplam sınav sürelerinin homojenize edilmesi.
+                    - **Salon Rotasyonu:** Büyük salonlardaki görev yükünün eşit dağıtılması.
                     - **Zaman Dilimi Adaleti:** Sabah ve akşam sınavlarının kendi içlerinde ve toplamda dengelenmesi.
 
                     #### 🛡️ Uygulanan Sert Kısıtlar (Garantiler)
                     Atama yapılırken aşağıdaki kurallar sistem tarafından **asla ihlal edilemez**:
                     1. **Çakışma Önleme:** Bir personel, aynı zaman diliminde iki farklı sınavda görevlendirilemez.
-                    2. **Dinlenme Kuralı:** Akşam sınavında görev alan bir personel, ertesi sabahın ilk sınavına atanamaz.
-                    3. **Kapasite Yönetimi:** Bir personelin günlük iş yükü **4 sınav** ile sınırlandırılmıştır.
-                    4. **Muafiyet Kontrolü:** "Görev Muafiyetleri" alanında belirtilen personel-gün kısıtlamalarına tam uyum sağlanır.
+                    2. **Nöbet Dinlenme Kuralı:** Akşam sınavından sonraki sabahın ilk sınavına atama yapılmaz.
+                    3. **Kapasite Yönetimi:** Günlük iş yükü **4 sınav** ile sınırlandırılmıştır.
+                    4. **Muafiyet Kontrolü:** - **Günlük:** Belirtilen günlerde personel görev almaz.
+                        - **Aralık Bazlı Saatlik:** Belirlenen saat dilimiyle (Örn: 16:00-20:00) çakışan hiçbir sınava atama yapılmaz.
                     """)
             else:
-                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı veya muafiyetleri azaltmayı deneyin.")
+                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı veya muafiyetleri esnetmeyi deneyin.")
 else:
     st.info("Lütfen sol taraftaki menüyü kullanarak sınav takviminizi (XML) yükleyin.")
