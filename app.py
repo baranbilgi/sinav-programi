@@ -39,7 +39,6 @@ staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, v
 
 st.sidebar.divider()
 st.sidebar.header("🎯 Strateji Ağırlıkları (Toplam: 100)")
-# Default değerler 5 kriter için %20 olarak ayarlandı
 w_total = st.sidebar.number_input("Toplam Süre Dengesi", 0, 100, 20)
 w_big = st.sidebar.number_input("Büyük Sınıf Dengesi", 0, 100, 20)
 w_morn = st.sidebar.number_input("Sabah Sınavı Dengesi", 0, 100, 20)
@@ -55,7 +54,7 @@ if uploaded_file:
     
     if st.sidebar.button("Planlamayı Optimize Et"):
         if total_weight != 100:
-            st.sidebar.error(f"⚠️ Hata: Ağırlıkların toplamı tam olarak 100 olmalıdır! (Şu an: {total_weight}). Lütfen dağılımı düzeltiniz.")
+            st.sidebar.error(f"⚠️ Hata: Ağırlıkların toplamı 100 olmalıdır! (Şu an: {total_weight}).")
         else:
             model = cp_model.CpModel()
             invs = list(range(1, staff_count + 1))
@@ -72,7 +71,9 @@ if uploaded_file:
                 
                 for d_idx, d in enumerate(days_list):
                     day_tasks = [idx for idx, t in enumerate(tasks) if t['gun'] == d]
-                    model.Add(sum(x[i, idx] for idx in day_tasks) <= 3)
+                    # Günlük limit 3'ten 4'e yükseltildi
+                    model.Add(sum(x[i, idx] for idx in day_tasks) <= 4)
+                    
                     if d_idx < len(days_list) - 1:
                         today_last = [idx for idx, t in enumerate(tasks) if t['gun'] == d and t['etiket'] == 'aksam']
                         tomorrow_first = [idx for idx, t in enumerate(tasks) if t['gun'] == days_list[d_idx+1] and t['etiket'] == 'sabah']
@@ -127,7 +128,6 @@ if uploaded_file:
                 
                 df = pd.DataFrame(final_res)
                 
-                # Excel Dosyası Oluşturma
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']].to_excel(writer, index=False)
@@ -136,7 +136,7 @@ if uploaded_file:
                 t1, t2, t3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Analizi", "📖 Metodoloji"])
                 
                 with t1:
-                    st.download_button("📥 Çizelgeyi Excel Olarak İndir", excel_data, "gorev_plani.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    st.download_button("📥 Excel İndir", excel_data, "gorev_plani.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                     st.dataframe(df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']], use_container_width=True)
                 
                 with t2:
@@ -155,18 +155,12 @@ if uploaded_file:
                 with t3:
                     st.info("### 🧠 Sistem Çalışma Metodolojisi")
                     st.markdown(f"""
-                    Bu çizelge, belirlediğiniz stratejik ağırlık dengesine göre oluşturulmuştur: 
-                    **Süre ({w_total}%)**, **Büyük Sınıf ({w_big}%)**, **Sabah ({w_morn}%)**, **Akşam ({w_eve}%)**, **S+A ({w_sa_total}%)**.
-
-                    **Sistem Prensipleri:**
-                    - **Optimizasyon Motoru:** Google OR-Tools kullanılarak milyonlarca olasılık arasından en düşük 'regret' puanına sahip dağıtım seçilir.
-                    - **İş Yükü Dengesi:** Ağırlığı yüksek olan kriterler, dağıtım esnasında öncelikli olarak eşitlenmeye çalışılır.
-                    - **Sert Kısıtlar:**
-                        1. **Çakışma Kontrolü:** Bir personel aynı anda birden fazla yerde görev alamaz.
-                        2. **Dinlenme Kuralı:** Akşam sınavı sonrası ertesi sabah görevi matematiksel olarak yasaklanmıştır.
-                        3. **Yorgunluk Yönetimi:** Günlük maksimum sınav sayısı 3 ile sınırlandırılmıştır.
+                    **Sert Kısıtlar:**
+                    1. **Çakışma Kontrolü:** Bir personel aynı anda birden fazla yerde görev alamaz.
+                    2. **Dinlenme Kuralı:** Akşam sınavı sonrası ertesi sabah görevi matematiksel olarak yasaklanmıştır.
+                    3. **Yorgunluk Yönetimi:** Günlük maksimum sınav sayısı **4** ile sınırlandırılmıştır.
                     """)
             else:
-                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını veya ağırlıkları kontrol edin.")
+                st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı deneyin.")
 else:
     st.info("Lütfen sol taraftaki menüyü kullanarak sınav takviminizi (XML) yükleyin.")
