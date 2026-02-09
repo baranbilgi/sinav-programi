@@ -95,8 +95,8 @@ if 'stats' not in st.session_state: st.session_state.stats = None
 st.sidebar.header("⚙️ Sistem Parametreleri")
 uploaded_file = st.sidebar.file_uploader("Sınav Takvimi (Excel)", type=["xlsx", "xls"])
 staff_count = st.sidebar.number_input("Toplam Personel Sayısı", min_value=1, value=6)
-un_days = st.sidebar.text_area("Günlük Muafiyet (No:Gün)", placeholder="4:Salı (1. Hafta)")
-un_times = st.sidebar.text_area("Saatlik Muafiyet (No:SaatAralığı)", placeholder="3:16:00-21:00")
+un_days = st.sidebar.text_area("Günlük Muafiyet (No:Gün)", placeholder="Örn: 4:Salı (1. Hafta)")
+un_times = st.sidebar.text_area("Saatlik Muafiyet (No:SaatAralığı)", placeholder="Örn: 3:16:00-21:00")
 
 st.sidebar.divider()
 st.sidebar.header("🎯 İş Yükü Dağılım Stratejileri")
@@ -139,12 +139,11 @@ if uploaded_file:
                 
                 for t in range(num_t): model.Add(sum(x[i, t] for i in invs) == 1)
 
-                # Muafiyet Uygulamaları
                 if un_days:
                     for entry in un_days.split(','):
                         try:
                             s_no, day_raw = entry.split(':')
-                            s_no = int(s_no.strip()); day_raw = day_raw.strip().lower()
+                            s_no, day_raw = int(s_no.strip()), day_raw.strip().lower()
                             for idx, t in enumerate(tasks):
                                 if s_no in invs and day_raw in t['Gün'].lower(): model.Add(x[s_no, idx] == 0)
                         except: pass
@@ -160,7 +159,7 @@ if uploaded_file:
                                     if max(t['bas_dk'], ex_s) < min(t['bit_dk'], ex_e): model.Add(x[s_no, idx] == 0)
                         except: pass
 
-                # --- İSTATİSTİKLER VE SERT DENGELEME ---
+                # --- İSTATİSTİKLER VE DENGELEME ---
                 total_mins, total_exams, morn_cnt, eve_cnt, big_mins = {}, {}, {}, {}, {}
                 for i in invs:
                     total_mins[i] = model.NewIntVar(0, 10000, f'tm_{i}')
@@ -168,21 +167,18 @@ if uploaded_file:
                     total_exams[i] = model.NewIntVar(0, 100, f'te_{i}')
                     morn_cnt[i] = model.NewIntVar(0, 100, f'mc_{i}')
                     eve_cnt[i] = model.NewIntVar(0, 100, f'ec_{i}')
-                    
                     model.Add(total_mins[i] == sum(x[i, t] * tasks[t]['Süre'] for t in range(num_t)))
                     model.Add(big_mins[i] == sum(x[i, t] * tasks[t]['Süre'] for t in range(num_t) if tasks[t]['Sınav Salonu'] in big_rooms))
                     model.Add(total_exams[i] == sum(x[i, t] for t in range(num_t)))
                     model.Add(morn_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Sabah'))
                     model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Akşam'))
 
-                # 1. SERT KURAL: Toplam Görev Sayısı Dengesi (±2)
+                # Sert Denge Kısıtları (±2 Kuralı)
                 max_te, min_te = model.NewIntVar(0, 100, 'max_te'), model.NewIntVar(0, 100, 'min_te')
                 model.AddMaxEquality(max_te, [total_exams[i] for i in invs])
                 model.AddMinEquality(min_te, [total_exams[i] for i in invs])
                 model.Add(max_te - min_te <= 2)
 
-                # 2. SERT KURAL: Sabah Seansı Sayısı Dengesi (±2)
-                # Bu kural, kısıtlı personelin üzerine sabah yükü yığılmasını engeller.
                 max_mc, min_mc = model.NewIntVar(0, 100, 'max_mc'), model.NewIntVar(0, 100, 'min_mc')
                 model.AddMaxEquality(max_mc, [morn_cnt[i] for i in invs])
                 model.AddMinEquality(min_mc, [morn_cnt[i] for i in invs])
@@ -215,13 +211,13 @@ if uploaded_file:
                         st.session_state.stats.append({
                             "Personel": f"{i}{' (Kısıtlı)' if i in restricted_staff else ''}",
                             "Toplam Süre (Dk)": solver.Value(total_mins[i]), 
-                            "Büyük Salon Süresi": solver.Value(big_mins[i]),
+                            "Büyük Salon (Dk)": solver.Value(big_mins[i]),
                             "Toplam Görev Sayısı": solver.Value(total_exams[i]), 
                             "Sabah Seansı Sayısı": solver.Value(morn_cnt[i]),
                             "Akşam Seansı Sayısı": solver.Value(eve_cnt[i])
                         })
                     st.success("✅ Operasyonel görev planlaması başarıyla tamamlanmıştır.")
-                else: st.error("❌ Belirlenen kriterler dahilinde uygun bir plan bulunamadı. Lütfen kısıtlamaları kontrol edin.")
+                else: st.error("❌ Uygun plan bulunamadı.")
 
 # --- SONUÇLAR ---
 if st.session_state.results:
@@ -232,20 +228,59 @@ if st.session_state.results:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             res_df[['Gün', 'Ders Adı', 'Sınav Saati', 'Sınav Salonu', 'Görevli Personel']].to_excel(writer, index=False)
-        st.download_button("📥 Çizelgeyi Excel İndir", buffer.getvalue(), "plan.xlsx")
+        st.download_button("📥 Excel İndir", buffer.getvalue(), "plan.xlsx", key="final_dl_pers")
     with tab2: st.table(pd.DataFrame(st.session_state.stats))
     with tab3:
         st.subheader("Sistem Çalışma Prensipleri")
         st.write("Bu yazılım, sınav gözetmenliği planlama sürecini operasyonel verimlilik ve standartlaştırılmış dağılım prensipleri çerçevesinde yürütür.")
-        st.info("Bu sistemin karar verme mekanizmasında Google tarafından geliştirilen OR-Tools kütüphanesi ve CP-SAT algoritması kullanılmıştır.")
+        
+        st.info("Bu sistemin karar verme mekanizmasında Google tarafından geliştirilen OR-Tools Algoritması kullanılmıştır.")
 
-        st.markdown("### Süreç Analizi ve Dönem Tespiti")
-        st.write("Sistem, günlerin takvim akışına göre hafta geçişlerini otomatik belirler. Her takvim gününün başlayan ilk sınavı 'Sabah Seansı' olarak tanımlanır.")
-
-        st.markdown("### Operasyonel Standartlar ve Sert Kısıtlar")
+        st.markdown("### Süreç Analizi ve Hafta Tespiti")
         st.write("""
-        - **Zaman Çakışması Kontrolü:** Bir personel aynı anda iki yerde olamaz.
-        - **Görev Sayısı Dengesi:** Programın tamamında en çok ve en az görev alan arasındaki fark ikiden fazla olamaz.
-        - **Seans Bazlı Denge:** Sabah seansı görevleri tüm personele eşit dağıtılmak zorundadır (Fark en fazla 2 olabilir).
-        - **Muafiyet Yönetimi:** Girilen tüm kısıtlamalar en öncelikli kural olarak işlenir.
+        Sistem, yüklenen sınav takvimini satır satır tarayarak zaman çizelgesini oluşturur. Bu aşamada günlerin takvim akışı incelenir. 
+        Eğer programda günlerin sırası geriye dönüyorsa, örneğin Cuma gününden sonra tekrar Pazartesi gününe ait kayıtlar geliyorsa, 
+        sistem bunu yeni bir çalışma haftası olarak tanımlar. Bu sayede iki haftalık süreçler birbirine karışmadan, kronolojik bir bütünlük içinde sisteme dahil edilir.
+        Muafiyet tanımları yapılırken 'Salı (1. Hafta)' gibi spesifik ifadeler kullanılarak on günlük süreçteki tekil günler kısıtlanabilmektedir.
+        """)
+
+        st.markdown("### Seans Sınıflandırma Mantığı")
+        st.write("""
+        Her sınav, başlangıç saatine ve takvimdeki konumuna göre belirli kategorilere ayrılır. Sistemin seansları nasıl damgaladığı şu kriterlere dayanır:
+        - **Sabah Seansı:** Her takvim gününün gerçekleşen ilk sınavı, saati ne olursa olsun o günün açılış görevi olarak kabul edilir ve sabah seansı olarak işaretlenir.
+        - **Akşam Seansı:** Programın toplam süresine göre bu tanım değişir. Eğer sistemde iki haftalık bir plan varsa, her günün gerçekleşen en son sınavı akşam seansı sayılır. Tek haftalık planlarda ise saat 16:00 ve sonrasında başlayan tüm görevler bu kategoriye alınır.
+        - **Normal Seans:** Sabahın ilk ve akşamın son sınavı dışında kalan tüm ara saatler standart görevler olarak tanımlanır.
+        """)
+
+        st.markdown("### Operasyonel Görev Kuralları")
+        st.write("""
+        Planlama oluşturulurken sistemin taviz vermediği temel operasyonel kurallar şunlardır:
+        - **Zaman Çakışması Kontrolü:** Bir personelin aynı zaman diliminde birden fazla salonda bulunması matematiksel olarak engellenir. Sınavların bitiş ve başlangıç saatleri milimetrik olarak hesaplanarak personelin fiziksel olarak bir sınavdan çıkmadan diğerine girmesi önlenir.
+        - **Günlük Görev Sınırı:** Operasyonel verimliliği korumak adına, bir personele aynı takvim günü içerisinde dörtten fazla sınav görevi atanmaz.
+        - **Görev Sayısı Dengesi:** Programın tamamı boyunca en çok görev alan personel ile en az görev alan personel arasındaki farkın ikiyi geçmemesi sağlanır. Bu kural, iş yükünün tüm kadroya dengeli bir şekilde dağıtılmasını garanti eder.
+        """)
+
+        st.markdown("### Sabah Seansı Dengeleme Standartları")
+        st.write("""
+        Sistem, sabah seanslarının tek bir personel üzerinde yığılmasını önlemek amacıyla özel bir dengeleme kuralı işletir. Toplam görev sayısında olduğu gibi, sabah seanslarında da en çok ve en az görev alan personeller arasındaki farkın ikiden fazla olmasına izin verilmez. Bu kural, özellikle akşam saatlerinde muafiyeti olan personellerin tüm görev yükünün sabah saatlerine kaydırılmasını engelleyerek homojen bir dağılım sağlar.
+        """)
+
+        st.markdown("### Muafiyet ve Kısıtlama Yönetimi")
+        st.write("""
+        Sisteme girilen personel muafiyetleri, planlamanın en öncelikli katmanını oluşturur:
+        - **Görev Engelleme:** Personel bazlı girilen saatlik veya günlük kısıtlamalar, sistem tarafından kesin bir yasak olarak algılanır. Kısıtlı saat aralığıyla en ufak bir kesişimi olan sınavlar, ilgili personele kesinlikle atanmaz.
+        - **İstatistik Dengelemesi:** Belirli saatlerde çalışamayan personel, sistemin genel dengeleme hesaplamalarından çıkarılır. Bu personelin kısıtlı olması nedeniyle giremediği sabah veya akşam seansları, sistem tarafından bir eksiklik olarak görülmez. Bu sayede kısıtlı personel sadece müsait olduğu vakitlerde görev alırken, diğer personellerin kendi aralarındaki iş yükü dengesi korunmuş olur.
+        """)
+
+        st.markdown("### İş Yükü Dağılımı ve Algoritmik Karar Mekanizması")
+        st.write("""
+        Sistem sadece sınav sayılarını değil, personelin sınavda geçirdiği toplam süreyi ve büyük kapasiteli salonlardaki mesai yoğunluğunu da dengelemeye odaklanır. 
+        Bu süreçte Google tarafından geliştirilen CP-SAT (Constraint Programming - Satisfiability) algoritması kullanılmaktadır. Bu algoritma, milyonlarca olası kombinasyonu saniyeler içerisinde tarayarak, tanımlanan tüm kısıtlamalara %100 uyan ve seçilen stratejik ağırlıklara göre en verimli olan sonucu üretir.
+        """)
+
+        st.markdown("### Süreç Verimliliği ve Kümelenme Stratejisi")
+        st.write("""
+        Personelin kampüste bulunduğu süreyi en verimli şekilde kullanması amaçlanır. Bu doğrultuda sistem kümelenme stratejisini uygular. 
+        Eğer bir personel o gün akşam seansında görevlendirilmişse, sistem o personeli çakışmayan diğer son seans görevlerine de atamaya öncelik verir. 
+        Bu sayede bir personelin bulunduğu sürede görevlerini tamamlayıp operasyonunu bitirmesi sağlanırken, diğer personellerin gereksiz yere geç saatlere kadar beklemesi önlenerek kurumsal zaman yönetimi optimize edilir.
         """)
