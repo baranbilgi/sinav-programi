@@ -121,7 +121,7 @@ if uploaded_file:
                     for i in invs:
                         if solver.Value(x[i, t_idx]):
                             row = t.copy()
-                            row['Gözetmen'] = f"Gözetmen {i}"
+                            row['Gözetmen'] = i # Sadece sayısal değer
                             final_res.append(row)
                 
                 df = pd.DataFrame(final_res)
@@ -140,7 +140,7 @@ if uploaded_file:
                     report = []
                     for i in invs:
                         report.append({
-                            "Gözetmen": f"Gözetmen {i}",
+                            "Gözetmen": i, # Sadece sayısal değer
                             "Toplam Mesai (dk)": solver.Value(total_mins[i]),
                             "Büyük Sınıf Mesaisi (dk)": solver.Value(big_mins[i]),
                             "Sabah Görevi": solver.Value(morn_cnt[i]),
