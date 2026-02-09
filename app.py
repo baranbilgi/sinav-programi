@@ -98,3 +98,66 @@ if uploaded_file:
             big_mins[i] = model.NewIntVar(0, 10000, f'bm_{i}')
             morn_cnt[i] = model.NewIntVar(0, 50, f'mc_{i}')
             eve_cnt[i] = model.NewIntVar(0, 50, f'ec_{i}')
+            critical_sum[i] = model.NewIntVar(0, 50, f'cs_{i}')
+
+            model.Add(total_mins[i] == sum(x[i, t] * tasks[t]['sure'] for t in range(num_t)))
+            model.Add(big_mins[i] == sum(x[i, t] * tasks[t]['sure'] for t in range(num_t) if tasks[t]['sinif'] in big_rooms))
+            model.Add(morn_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['etiket'] == 'sabah'))
+            model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['etiket'] == 'aksam'))
+            model.Add(critical_sum[i] == morn_cnt[i] + eve_cnt[i])
+
+        # S+A Toplam Farkı <= 1 (Arka planda çalışır)
+        max_cs, min_cs = model.NewIntVar(0, 50, 'max_cs'), model.NewIntVar(0, 50, 'min_cs')
+        model.AddMaxEquality(max_cs, critical_sum.values())
+        model.AddMinEquality(min_cs, critical_sum.values())
+        model.Add(max_cs - min_cs <= 1)
+
+        # Optimizasyon
+        ma_t, mi_t = model.NewIntVar(0, 10000, 'ma_t'), model.NewIntVar(0, 10000, 'mi_t')
+        model.AddMaxEquality(ma_t, total_mins.values())
+        model.AddMinEquality(mi_t, total_mins.values())
+        model.Minimize(ma_t - mi_t)
+
+        solver = cp_model.CpSolver()
+        if solver.Solve(model) in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
+            st.success("✅ Operasyonel planlama başarıyla optimize edildi.")
+            
+            results = []
+            for t_idx, t in enumerate(tasks):
+                for i in invs:
+                    if solver.Value(x[i, t_idx]):
+                        row = t.copy()
+                        row['Gözetmen'] = f"Gözetmen {i}"
+                        results.append(row)
+            
+            df_final = pd.DataFrame(results)
+            
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_final[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']].to_excel(writer, index=False)
+            
+            tab1, tab2, tab3 = st.tabs(["📋 Görev Çizelgesi", "📊 İş Yükü Analizi", "📖 Metodoloji"])
+            
+            with tab1:
+                st.download_button("📥 Excel Olarak İndir", output.getvalue(), "gorev_plani.xlsx")
+                st.dataframe(df_final[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']], use_container_width=True)
+            
+            with tab2:
+                stats = []
+                for i in invs:
+                    stats.append({
+                        "Gözetmen": f"Gözetmen {i}",
+                        "Toplam Mesai (dk)": solver.Value(total_mins[i]),
+                        "Büyük Sınıf Mesaisi (dk)": solver.Value(big_mins[i]),
+                        "Sabah Görevi": solver.Value(morn_cnt[i]),
+                        "Akşam Görevi": solver.Value(eve_cnt[i])
+                    })
+                st.table(pd.DataFrame(stats))
+
+            with tab3:
+                st.write("**Planlama İlkeleri:**")
+                st.write("1. **Süre Dengesi:** Personel arasındaki toplam mesai süreleri homojenize edilir.")
+                st.write("2. **Dinlenme Kuralı:** Akşam görevinden sonraki sabah görevi atanmaz.")
+                st.write("3. **Kritik Oturum Dengesi:** Sabah ve akşam sınavları toplamı personel arasında en fazla 1 sınav fark edecek şekilde dağıtılır.")
+        else:
+            st.error("Uygun bir plan bulunamadı.")
