@@ -71,9 +71,7 @@ if uploaded_file:
                 
                 for d_idx, d in enumerate(days_list):
                     day_tasks = [idx for idx, t in enumerate(tasks) if t['gun'] == d]
-                    # Günlük limit 3'ten 4'e yükseltildi
                     model.Add(sum(x[i, idx] for idx in day_tasks) <= 4)
-                    
                     if d_idx < len(days_list) - 1:
                         today_last = [idx for idx, t in enumerate(tasks) if t['gun'] == d and t['etiket'] == 'aksam']
                         tomorrow_first = [idx for idx, t in enumerate(tasks) if t['gun'] == days_list[d_idx+1] and t['etiket'] == 'sabah']
@@ -127,7 +125,6 @@ if uploaded_file:
                             final_res.append(row)
                 
                 df = pd.DataFrame(final_res)
-                
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df[['gun', 'sinav', 'saat', 'sinif', 'Gözetmen']].to_excel(writer, index=False)
@@ -155,10 +152,22 @@ if uploaded_file:
                 with t3:
                     st.info("### 🧠 Sistem Çalışma Metodolojisi")
                     st.markdown(f"""
-                    **Sert Kısıtlar:**
-                    1. **Çakışma Kontrolü:** Bir personel aynı anda birden fazla yerde görev alamaz.
-                    2. **Dinlenme Kuralı:** Akşam sınavı sonrası ertesi sabah görevi matematiksel olarak yasaklanmıştır.
-                    3. **Yorgunluk Yönetimi:** Günlük maksimum sınav sayısı **4** ile sınırlandırılmıştır.
+                    Bu dağıtım planı, **Yapay Zeka temelli Optimizasyon (Constraint Programming)** teknikleri kullanılarak oluşturulmuştur. Sistem, milyonlarca olası atama kombinasyonunu saniyeler içinde tarayarak belirlediğiniz strateji ağırlıklarına göre en dengeli sonucu üretir.
+
+                    #### ⚖️ Optimizasyon Hiyerarşisi
+                    Sistem, aşağıdaki kriterler arasındaki farkı (eşitsizliği) minimize etmeye odaklanır:
+                    - **Mesai Dengesi:** Personel arasındaki toplam sınav sürelerinin homojenize edilmesi.
+                    - **Salon Rotasyonu:** Büyük kapasiteli salonlardaki gözetmenlik yükünün eşit dağıtılması.
+                    - **Zaman Dilimi Adaleti:** Sabah ve akşam sınavlarının kendi içlerinde ve toplamda dengelenmesi.
+
+                    #### 🛡️ Uygulanan Sert Kısıtlar (Garantiler)
+                    Atama yapılırken aşağıdaki kurallar sistem tarafından **asla ihlal edilemez**:
+                    1. **Çakışma Önleme:** Bir personel, aynı zaman diliminde (çakışan saatlerde) birden fazla sınavda görevlendirilemez.
+                    2. **Nöbet Dinlenme Kuralı:** Akşam sınavında görev alan bir personel, dinlenme süresi gözetilerek ertesi sabahın ilk sınavına atanamaz.
+                    3. **Kapasite Yönetimi:** Bir personelin günlük iş yükü **4 sınav** ile sınırlandırılarak aşırı yorulma engellenmiştir.
+
+                    #### 🎯 Stratejik Ağırlıklandırma Etkisi
+                    Sidebar'da belirlediğiniz **%{w_total} Süre**, **%{w_big} Büyük Sınıf** vb. ağırlıklar, algoritmanın 'ceza puanı' sistemini belirler. Ağırlığı yüksek olan bir kriterde oluşacak en küçük bir dengesizlik, toplam çözüm puanını daha çok etkilediği için sistem önceliği o kriteri eşitlemeye verir.
                     """)
             else:
                 st.error("Mevcut kısıtlar altında uygun bir dağıtım bulunamadı. Lütfen personel sayısını artırmayı deneyin.")
