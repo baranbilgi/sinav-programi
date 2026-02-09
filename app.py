@@ -139,14 +139,20 @@ if uploaded_file:
                 
                 for t in range(num_t): model.Add(sum(x[i, t] for i in invs) == 1)
 
-                # Muafiyet Uygulamaları (Sert Kısıt)
+                # Muafiyet Uygulamaları (Hafta Duyarlı)
                 if un_days:
                     for entry in un_days.split(','):
                         try:
-                            s_no, d_name = entry.split(':')
-                            s_no, d_name = int(s_no.strip()), d_name.strip().lower()
+                            s_no, day_raw = entry.split(':')
+                            s_no = int(s_no.strip())
+                            day_raw = day_raw.strip().lower() # Örn: "salı (1. hafta)"
+                            
                             for idx, t in enumerate(tasks):
-                                if s_no in invs and d_name in t['Gün'].lower(): model.Add(x[s_no, idx] == 0)
+                                if s_no in invs:
+                                    # Hem gün ismi hem de hafta bilgisi eşleşiyorsa kısıtla
+                                    # "salı (1. hafta)" metni t['Gün'] içinde geçiyor mu?
+                                    if day_raw in t['Gün'].lower():
+                                        model.Add(x[s_no, idx] == 0)
                         except: pass
                 
                 if un_times:
@@ -170,13 +176,14 @@ if uploaded_file:
                     morn_cnt[i] = model.NewIntVar(0, 100, f'mc_{i}')
                     eve_cnt[i] = model.NewIntVar(0, 100, f'ec_{i}')
                     
-                    # Sayaçların sadece atama yapıldığında (x[i, t] == 1) sayılması için AddEquality kullanımı
+                    # İstatistik Sayaçları (Sadece atama yapıldığında toplar)
                     model.Add(total_mins[i] == sum(x[i, t] * tasks[t]['Süre'] for t in range(num_t)))
                     model.Add(big_mins[i] == sum(x[i, t] * tasks[t]['Süre'] for t in range(num_t) if tasks[t]['Sınav Salonu'] in big_rooms))
                     model.Add(total_exams[i] == sum(x[i, t] for t in range(num_t)))
                     model.Add(morn_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Sabah'))
                     model.Add(eve_cnt[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Akşam'))
 
+                # Katı İş Yükü Sınırı
                 max_e, min_e = model.NewIntVar(0, 100, 'max_e'), model.NewIntVar(0, 100, 'min_e')
                 model.AddMaxEquality(max_e, [total_exams[i] for i in invs])
                 model.AddMinEquality(min_e, [total_exams[i] for i in invs])
@@ -238,13 +245,21 @@ if st.session_state.results:
         st.write("""
         Sistem, yüklenen sınav takvimini satır satır tarayarak zaman çizelgesini oluşturur. Bu aşamada günlerin takvim akışı incelenir. 
         Eğer programda günlerin sırası geriye dönüyorsa, örneğin Cuma gününden sonra tekrar Pazartesi gününe ait kayıtlar geliyorsa, 
-        sistem bunu yeni bir çalışma haftası olarak tanımlar.
+        sistem bunu yeni bir çalışma haftası olarak tanımlar. Muafiyet tanımları yapılırken 'Salı (1. Hafta)' gibi spesifik ifadeler kullanılarak 
+        on günlük süreçteki tekil günler kısıtlanabilmektedir.
         """)
 
         st.markdown("### Operasyonel Standartlar")
         st.write("""
         - Bir personel aynı zaman diliminde birden fazla sınavda görevlendirilemez.
         - Günlük maksimum görev sayısı dört ile sınırlandırılmıştır.
-        - En çok görev alan ile en az görev alan personel arasındaki fark ikiden fazla olamaz.
+        - Görev dağılım dengesinin sağlanması adına, en çok görev alan ile en az görev alan personel arasındaki fark ikiden fazla olamaz.
         - Google CP-SAT algoritması, girilen tüm kısıtlamaları (günlük/saatlik muafiyetler) en öncelikli kurallar olarak işler.
+        """)
+
+        st.markdown("### İş Yükü Optimizasyonu")
+        st.write("""
+        Yazılım, görev sayılarını eşitlemenin yanı sıra personelin harcadığı toplam süreyi ve büyük kapasiteli salonlardaki mesai yükünü de dengeler. 
+        Tüm bu veriler bütünleşik bir yapıda, programın tamamı üzerinden matematiksel olarak optimize edilir. 
+        Google tarafından geliştirilen CP-SAT çözücüsü, karmaşık kısıtlar altında milyonlarca olasılığı saniyeler içinde tarayarak operasyonel verimliliği en üst düzeye çıkaran planı üretir.
         """)
