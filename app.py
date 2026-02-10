@@ -82,15 +82,9 @@ def parse_excel(file):
         for t in day_tasks:
             t['Mesai Türü'] = 'Normal'
             if t['bas_dk'] == min_s: t['Mesai Türü'] = 'Sabah'
-            
-            # Dinamik Akşam Tanımı
             if max_week_found >= 2:
-                # 2 haftalık programda sadece günün son sınav saati Akşam'dır
                 if t['bas_dk'] == max_s: t['Mesai Türü'] = 'Akşam'
-            else:
-                # 1 haftalık programda 16:00 ve sonrası TÜM sınavlar Akşam'dır
-                if t['bas_dk'] >= 960: t['Mesai Türü'] = 'Akşam'
-            
+            elif t['bas_dk'] >= 960: t['Mesai Türü'] = 'Akşam'
             t['slot_id'] = f"{t['Gün']}_{t['bas_dk']}"
             tasks.append(t)
     return tasks, sorted(list(set(t['Sınav Salonu'] for t in tasks))), unique_days
@@ -136,7 +130,6 @@ if uploaded_file:
                             try: restricted_staff.add(int(e.split(':')[0].strip()))
                             except: pass
 
-                # --- KISITLAR ---
                 evening_clusters = []
                 for i in invs:
                     for slot in set(t['slot_id'] for t in tasks):
@@ -145,12 +138,9 @@ if uploaded_file:
                     for d in days_list:
                         day_idx = [idx for idx, t in enumerate(tasks) if t['Gün'] == d]
                         model.Add(sum(x[i, idx] for idx in day_idx) <= 4)
-                        
-                        # KÜMELENME STRATEJİSİ: Bir personel akşam kalıyorsa diğer akşam sınavlarını da ona ver
                         eve_tasks_in_day = [idx for idx in day_idx if tasks[idx]['Mesai Türü'] == 'Akşam']
                         if len(eve_tasks_in_day) > 1:
                             h = model.NewBoolVar(f'h_{i}_{d}')
-                            # Eğer i kişisi o gün 2 veya daha fazla akşam sınavına atanırsa h=1 olur
                             model.Add(sum(x[i, idx] for idx in eve_tasks_in_day) >= 2).OnlyEnforceIf(h)
                             evening_clusters.append(h)
                 
@@ -176,7 +166,6 @@ if uploaded_file:
                                     if max(t['bas_dk'], ex_s) < min(t['bit_dk'], ex_e): model.Add(x[s_no, idx] == 0)
                         except: pass
 
-                # --- İSTATİSTİKLER ---
                 tm, te, mc, ec, bm = {}, {}, {}, {}, {}
                 for i in invs:
                     tm[i] = model.NewIntVar(0, 10000, f'tm_{i}')
@@ -190,7 +179,6 @@ if uploaded_file:
                     model.Add(mc[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Sabah'))
                     model.Add(ec[i] == sum(x[i, t] for t in range(num_t) if tasks[t]['Mesai Türü'] == 'Akşam'))
 
-                # Sert Denge (±2)
                 for var_list in [[te[i] for i in invs], [mc[i] for i in invs]]:
                     mx, mn = model.NewIntVar(0, 100, 'mx'), model.NewIntVar(0, 100, 'mn')
                     model.AddMaxEquality(mx, var_list); model.AddMinEquality(mn, var_list)
@@ -205,13 +193,12 @@ if uploaded_file:
 
                 scoring_invs = [i for i in invs if i not in restricted_staff]
                 
-                # Hedef Fonksiyonu: Dengeler + Kümelenme Ödülü
                 model.Minimize(
                     get_diff(tm, invs, "t") * w["total"] * 100 +
                     get_diff(bm, invs, "b") * w["big"] * 100 +
                     get_diff(mc, scoring_invs, "m") * w["morn"] * 1000 + 
                     get_diff(ec, scoring_invs, "e") * w["eve"] * 1000 -
-                    sum(evening_clusters) * 8000 # Agresif Kümelenme Ödülü
+                    sum(evening_clusters) * 8000
                 )
 
                 solver = cp_model.CpSolver()
@@ -225,8 +212,11 @@ if uploaded_file:
                     for i in invs:
                         st.session_state.stats.append({
                             "Personel": f"{i}{' (Kısıtlı)' if i in restricted_staff else ''}",
-                            "Toplam Süre (Dk)": solver.Value(tm[i]), "Toplam Görev": solver.Value(te[i]), 
-                            "Sabah Seansı": solver.Value(mc[i]), "Akşam Seansı": solver.Value(ec[i])
+                            "Toplam Süre (Dk)": solver.Value(tm[i]), 
+                            "Büyük Salon Süresi (Dk)": solver.Value(bm[i]), # Tabloya eklendi
+                            "Toplam Görev": solver.Value(te[i]), 
+                            "Sabah Seansı": solver.Value(mc[i]), 
+                            "Akşam Seansı": solver.Value(ec[i])
                         })
                     st.success("✅ Optimizasyon tamamlandı.")
                 else: st.error("❌ Uygun çözüm bulunamadı.")
@@ -247,7 +237,7 @@ if st.session_state.results:
         st.write("Bu yazılım, sınav gözetmenliği planlama sürecini operasyonel verimlilik ve standartlaştırılmış dağılım prensipleri çerçevesinde yürütür.")
         st.info("Sistemin karar mekanizmasında Google tarafından geliştirilen OR-Tools kütüphanesi ve CP-SAT algoritması kullanılmaktadır.")
 
-        st.markdown("### Süreç Analizi ve Dönem Tespiti")
+        st.markdown("### Süreç Analizi ve Hafta Tespiti")
         st.write("""
         Sistem, yüklenen sınav takvimini satır satır tarayarak kronolojik bir zaman çizelgesi oluşturur. Günlerin takvim akışı incelenerek programın bir veya birden fazla haftadan oluştuğu otomatik olarak saptanır. Muafiyet tanımları yapılırken 'Salı (1. Hafta)' gibi ifadeler kullanılarak, on günlük süreçteki tekil günler spesifik olarak kısıtlanabilmektedir.
         """)
